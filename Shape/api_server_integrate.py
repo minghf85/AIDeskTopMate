@@ -7,7 +7,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi import Body
 from pydantic import BaseModel
 import uvicorn
-
+from Shape import api_models
 import OpenGL.GL as gl
 import numpy as np
 from PIL import Image
@@ -1249,6 +1249,9 @@ class Live2DController:
                 }
             except Exception as e:
                 raise HTTPException(status_code=500, detail=f"Error getting canvas info: {str(e)}")
+            
+        # 口型同步
+
 
     def start_window(self, qt_app: QApplication):
         """启动窗口"""
