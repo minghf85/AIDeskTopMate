@@ -4,6 +4,7 @@ import json
 from typing import Optional, Dict, Any, List, Union
 from dataclasses import dataclass, asdict
 from fastapi import FastAPI, HTTPException
+from fastapi import Body
 from pydantic import BaseModel
 import uvicorn
 
@@ -60,6 +61,9 @@ class HitTestRequest(BaseModel):
     x: float
     y: float
     top_only: bool = False
+
+class RotationRequest(BaseModel):
+    degrees: float
 
 class AreaHitRequest(BaseModel):
     area_name: str
@@ -547,9 +551,8 @@ class TransparentLive2dWindow(QOpenGLWidget):
             # 获取可用动作组
             self.state.available_motions = self.model.GetMotions()
             # 获取可用表情
-            expressions = self.model.GetExpressions()
-            self.state.available_expressions = [expr[0] for expr in expressions] if expressions else []
-            
+            self.state.available_expressions = self.model.GetExpressions()
+            print(f"Available motions: {self.state.available_motions}, Available expressions: {self.state.available_expressions}")
             # 获取模型详细信息
             self.model_info = {
                 "parameter_ids": self.model.GetParameterIds(),
@@ -1064,22 +1067,20 @@ class Live2DController:
             return {"message": f"Setting position: ({x}, {y})"}
 
         @self.app.post("/offset/set")
-        async def set_offset(x: float, y: float):
-            """设置模型偏移"""
+        async def set_offset(
+            x: float = Body(...),  # 显式声明从请求体获取
+            y: float = Body(...)
+        ):
             if not self.window:
                 raise HTTPException(status_code=400, detail="Window not initialized")
-            
             self.signals.offset_requested.emit(x, y)
             return {"message": f"Setting offset: ({x}, {y})"}
-
         @self.app.post("/rotation/set")
-        async def set_rotation(degrees: float):
-            """设置旋转角度"""
+        async def set_rotation(request: RotationRequest):  # 接收 JSON 对象
             if not self.window:
                 raise HTTPException(status_code=400, detail="Window not initialized")
-            
-            self.signals.rotation_requested.emit(degrees)
-            return {"message": f"Setting rotation: {degrees}°"}
+            self.signals.rotation_requested.emit(request.degrees)
+            return {"message": f"Setting rotation: {request.degrees}°"}
 
         # 碰撞检测相关API
         @self.app.post("/hit-test/parts")
