@@ -7,16 +7,22 @@ from PyQt6.QtGui import QMouseEvent, QCursor, QWheelEvent
 from PyQt6.QtOpenGLWidgets import QOpenGLWidget
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtGui import QGuiApplication
+from AC import AudioController
 import win32gui
 import win32con
 import win32api
-
+import pygame
 import live2d.v3 as live2d
-
-
-
+from live2d.utils.lipsync import WavHandler
+FPS = 60
+deltaSecs = 1.0 / FPS
+lipSyncN = 3
+pygame.init()
 class Live2DSignals(QObject):
     """信号类，用于线程间通信"""
+    wav_interrupted = pyqtSignal(str)
+    wav_requested = pyqtSignal(bytes)
+    wav_file_requested = pyqtSignal(str)
     model_load_requested = pyqtSignal(str)
     motion_requested = pyqtSignal(str, int, int)  # group, index, priority
     expression_requested = pyqtSignal(str)
@@ -63,7 +69,9 @@ class TransparentLive2dWindow(QOpenGLWidget):
         self.signals = signals
         self.state = Live2DState()
         self.mutex = QMutex()
-        
+        self.SetAndAdd =SetAndAddController()
+        #self.wavHandler = WavHandler()
+        self.audio_controller = AudioController()
         # 用于存储API查询结果
         self.last_hit_test_result = []
         self.last_area_hit_result = False
@@ -102,6 +110,9 @@ class TransparentLive2dWindow(QOpenGLWidget):
 
     def _connect_signals(self):
         """连接外部控制信号"""
+        self.signals.wav_interrupted.connect(self.wav_interrupted_slot)
+        self.signals.wav_requested.connect(self.wav_requested_slot)
+        self.signals.wav_file_requested.connect(self.wav_file_requested_slot)
         self.signals.model_load_requested.connect(self.load_model_slot)
         self.signals.motion_requested.connect(self.start_motion_slot)
         self.signals.expression_requested.connect(self.set_expression_slot)
@@ -175,7 +186,10 @@ class TransparentLive2dWindow(QOpenGLWidget):
         if not self.model:
             return
         try:
-            self.model.SetParameterValueById(parameter_id, value, weight)
+            self.SetAndAdd.set_id = parameter_id
+            self.SetAndAdd.set_value = value
+            self.SetAndAdd.set_weight = weight
+            self.SetAndAdd.isrunning = True
             self.state.parameters[parameter_id] = value
             self._emit_state_update()
         except Exception as e:
@@ -186,7 +200,9 @@ class TransparentLive2dWindow(QOpenGLWidget):
         if not self.model:
             return
         try:
-            self.model.AddParameterValueById(parameter_id, value)
+            self.SetAndAdd.add_id = parameter_id
+            self.SetAndAdd.add_value = value
+            self.SetAndAdd.isrunning = True
             current_value = self.state.parameters.get(parameter_id, 0.0)
             self.state.parameters[parameter_id] = current_value + value
             self._emit_state_update()
@@ -549,23 +565,51 @@ class TransparentLive2dWindow(QOpenGLWidget):
         gl.glMatrixMode(gl.GL_MODELVIEW)
         gl.glLoadIdentity()
         if self.model:
-            self.model.Update(1.0/60.0)
+            live2d.clearBuffer()
+            self.model.Update(1.0/FPS)
+            rms = self.audio_controller.update_lipsync()
+            if rms > 0:
+                self.model.SetParameterValueById("ParamMouthOpenY", rms * lipSyncN, 1)
+            if self.SetAndAdd.isrunning:
+                if self.SetAndAdd.set_id:
+                    self.model.SetParameterValueById(self.SetAndAdd.set_id, self.SetAndAdd.set_value, self.SetAndAdd.set_weight)
+                if self.SetAndAdd.add_id:
+                    self.model.AddParameterValueById(self.SetAndAdd.add_id, self.SetAndAdd.add_value)
+                self.SetAndAdd.stop()
             self.model.Draw()
+
+    def wav_requested_slot(self, wav_data: bytes):
+        """处理音频数据请求槽函数"""
+        try:
+            # 处理流式音频数据
+            self.audio_controller.add_stream_task(wav_data)
+        except Exception as e:
+            print(f"处理音频流数据错误: {e}")
+    
+    def wav_file_requested_slot(self, file_path: str):
+        self.audio_controller.add_file_task(file_path)
+    
+    def wav_interrupted_slot(self):
+        print("stop lipsync")
+        self.audio_controller.stop()
 
     def updateEyeTracking(self):
         if not self.model or not self.state.eye_tracking_enabled:
             return
         try:
+            # 获取全局鼠标位置
             global_mouse_pos = QCursor.pos()
-            look_x = (global_mouse_pos.x() / self.screen_width) * 2.0 - 1.0
-            look_y = -((global_mouse_pos.y() / self.screen_height) * 2.0 - 1.0)
-            look_x = max(-1.0, min(1.0, look_x)) * self.state.tracking_strength
-            look_y = max(-1.0, min(1.0, look_y)) * self.state.tracking_strength
-            self.model.SetParameterValueById("ParamAngleX", look_x * 30)
-            self.model.SetParameterValueById("ParamAngleY", look_y * 30)
-            self.model.SetParameterValueById("ParamEyeBallX", look_x)
-            self.model.SetParameterValueById("ParamEyeBallY", look_y)
-        except Exception:
+            window_pos = self.mapFromGlobal(global_mouse_pos)
+            
+            # 获取窗口相对坐标
+            window_x = window_pos.x()
+            window_y = window_pos.y()
+
+            # 应用 Drag 更新
+            self.model.Drag(window_x, window_y)
+            self.model.UpdateDrag(1.0/FPS)  # 使用与 paintGL 相同的时间步长
+        except Exception as e:
+            print(f"Eye tracking error: {e}")
             pass
 
     def timerEvent(self, a0: QTimerEvent | None) -> None:
@@ -664,3 +708,30 @@ class TransparentLive2dWindow(QOpenGLWidget):
         except Exception as e:
             print(f"Get parameter info error: {e}")
             return {}
+        
+
+class SetAndAddController:
+    """用于设置和添加参数的类"""
+    def __init__(self):
+        self.set_id = ""
+        self.set_value = 0.0
+        self.set_weight = 1.0
+        self.add_id = ""
+        self.add_value = 0.0
+        self.isrunning = False
+    
+    def start(self):
+        self.isrunning = True
+        self.set_id = ""
+        self.set_value = 0.0
+        self.set_weight = 1.0
+        self.add_id = ""
+        self.add_value = 0.0
+    
+    def stop(self):
+        self.isrunning = False
+        self.set_id = ""
+        self.set_value = 0.0
+        self.set_weight = 1.0
+        self.add_id = ""
+        self.add_value = 0.0
