@@ -1,27 +1,26 @@
 import os
 from dataclasses import dataclass, asdict
-from api_models import Live2DState
+from Body.api_models import Live2DState
+from typing import Dict, Any, Optional, Union
 import OpenGL.GL as gl
 from PyQt6.QtCore import QTimerEvent, Qt, QTimer, QTime, pyqtSignal, QObject, QMutex, QThread
 from PyQt6.QtGui import QMouseEvent, QCursor, QWheelEvent
 from PyQt6.QtOpenGLWidgets import QOpenGLWidget
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtGui import QGuiApplication
-from AC import AudioController
+from Head.mouth import TTS_GSV, TTS_realtime
 import win32gui
 import win32con
 import win32api
-import pygame
 import live2d.v3 as live2d
-FPS = 60
-deltaSecs = 1.0 / FPS
-lipSyncN = 3
-pygame.init()
+from dotmap import DotMap
+import toml
+# 读取toml的live2d配置
+config = DotMap(toml.load("config.toml"))
+FPS = config.live2d.FPS
+lipSyncN = config.live2d.lipSyncN
 class Live2DSignals(QObject):
     """信号类，用于线程间通信"""
-    wav_interrupted = pyqtSignal(str)
-    wav_requested = pyqtSignal(bytes)
-    wav_file_requested = pyqtSignal(str)
     model_load_requested = pyqtSignal(str)
     motion_requested = pyqtSignal(str, int, int)  # group, index, priority
     expression_requested = pyqtSignal(str)
@@ -63,14 +62,18 @@ class TransparentLive2dWindow(QOpenGLWidget):
     """
     独立的透明Live2D窗口，通过信号接收外部控制指令
     """
-    def __init__(self, signals: Live2DSignals) -> None:
+    def __init__(
+    self, 
+    signals: Live2DSignals, 
+    mouth: Optional[Union[TTS_GSV, TTS_realtime]] = None
+) -> None:
         super().__init__()
         self.signals = signals
         self.state = Live2DState()
         self.mutex = QMutex()
         self.SetAndAdd =SetAndAddController()
         #self.wavHandler = WavHandler()
-        self.audio_controller = AudioController()
+        self.mouth = mouth
         # 用于存储API查询结果
         self.last_hit_test_result = []
         self.last_area_hit_result = False
@@ -109,9 +112,6 @@ class TransparentLive2dWindow(QOpenGLWidget):
 
     def _connect_signals(self):
         """连接外部控制信号"""
-        self.signals.wav_interrupted.connect(self.wav_interrupted_slot)
-        self.signals.wav_requested.connect(self.wav_requested_slot)
-        self.signals.wav_file_requested.connect(self.wav_file_requested_slot)
         self.signals.model_load_requested.connect(self.load_model_slot)
         self.signals.motion_requested.connect(self.start_motion_slot)
         self.signals.expression_requested.connect(self.set_expression_slot)
@@ -459,6 +459,7 @@ class TransparentLive2dWindow(QOpenGLWidget):
             print(f"Available motions: {self.state.available_motions}, Available expressions: {self.state.available_expressions}")
             # 获取模型详细信息
             self.model_info = {
+                "name": self.state.model_path,
                 "parameter_ids": self.model.GetParameterIds(),
                 "part_ids": self.model.GetPartIds(),
                 "drawable_ids": self.model.GetDrawableIds(),
@@ -466,7 +467,9 @@ class TransparentLive2dWindow(QOpenGLWidget):
                 "canvas_size_pixel": self.model.GetCanvasSizePixel(),
                 "pixels_per_unit": self.model.GetPixelsPerUnit(),
                 "mvp_matrix": self.model.GetMvp(),
-                "motion_finished": self.model.IsMotionFinished()
+                "motion_finished": self.model.IsMotionFinished(),
+                "expressions": self.state.available_expressions,
+                "motions": self.state.available_motions
             }
             self.signals.model_info_result.emit(self.model_info)
         except Exception as e:
@@ -566,9 +569,8 @@ class TransparentLive2dWindow(QOpenGLWidget):
         if self.model:
             live2d.clearBuffer()
             self.model.Update(1.0/FPS)
-            rms = self.audio_controller.update_lipsync()
-            if rms > 0:
-                self.model.SetParameterValueById("ParamMouthOpenY", rms * lipSyncN, 1)
+            if self.mouth.wav_handler.Update():
+                self.model.SetParameterValueById("ParamMouthOpenY", self.mouth.wav_handler.GetRms() * lipSyncN, 1)
             if self.SetAndAdd.isrunning:
                 if self.SetAndAdd.set_id:
                     self.model.SetParameterValueById(self.SetAndAdd.set_id, self.SetAndAdd.set_value, self.SetAndAdd.set_weight)
@@ -576,21 +578,6 @@ class TransparentLive2dWindow(QOpenGLWidget):
                     self.model.AddParameterValueById(self.SetAndAdd.add_id, self.SetAndAdd.add_value)
                 self.SetAndAdd.stop()
             self.model.Draw()
-
-    def wav_requested_slot(self, wav_data: bytes):
-        """处理音频数据请求槽函数"""
-        try:
-            # 处理流式音频数据
-            self.audio_controller.add_stream_task(wav_data)
-        except Exception as e:
-            print(f"处理音频流数据错误: {e}")
-    
-    def wav_file_requested_slot(self, file_path: str):
-        self.audio_controller.add_file_task(file_path)
-    
-    def wav_interrupted_slot(self):
-        print("stop lipsync")
-        self.audio_controller.stop()
 
     def updateEyeTracking(self):
         if not self.model or not self.state.eye_tracking_enabled:

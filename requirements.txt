@@ -1,2 +1,25 @@
 live2d-py
 pyqt6
+langchain
+openai
+chroma-db
+pydantic
+python-dotenv
+llama-cpp-python
+gpt4all
+toml
+pyaudio
+# 测试客户端依赖
+streamlit
+requests
+websocket-client
+numpy
+sounddevice
+audio-recorder-streamlit
+fastapi
+uvicorn
+funasr
+soundfile
+modelscope
+loguru
+RealtimeTTS

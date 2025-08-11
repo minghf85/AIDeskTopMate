@@ -17,7 +17,6 @@ from live2d.v3 import StandardParams
 import numpy as np
 import io
 import time
-LipsyncN = 0.04
 
 class Live2DController:
     """Live2D控制器，管理窗口和API服务"""
@@ -53,6 +52,17 @@ class Live2DController:
             return {
                 "status": "running" if self.window and self.window.isVisible() else "stopped",
                 "state": asdict(self.current_state)
+            }
+
+        @self.app.get("/modelstatus")
+        async def get_model_status():
+            """获取模型状态"""
+            if not self.window or not self.window.model:
+                return {"status": "not loaded"}
+            return {
+                "status": "loaded",
+                "model_info": self.window.model_info
+
             }
 
         # 模型相关API
@@ -492,54 +502,6 @@ class Live2DController:
                 }
             except Exception as e:
                 raise HTTPException(status_code=500, detail=f"Error getting canvas info: {str(e)}")
-            
-        @self.app.websocket("/lipsync/stream")
-        async def lipsync_stream(websocket: WebSocket):
-            await websocket.accept()
-            p = None
-            stream = None
-            
-            try:
-                
-                
-                while True:
-                    # 接收音频数据
-                    data = await websocket.receive_bytes()
-                        
-                    # 通过信号发送音频数据（原功能保留）
-                    self.signals.wav_requested.emit(data)
-                    
-            except WebSocketDisconnect:
-                print("WebSocket连接断开")
-            except Exception as e:
-                print(f"WebSocket音频流处理错误: {e}")
-                await websocket.close(code=1011, reason=str(e))
-            finally:
-                # 清理资源
-                if stream is not None:
-                    stream.stop_stream()
-                    stream.close()
-                if p is not None:
-                    p.terminate()
-                print("音频流处理结束")
-        @self.app.post("/lipsync/file")
-        async def lipsync_file(file: str):
-            try:
-                self.signals.wav_file_requested.emit(file)
-            except Exception as e:
-                raise HTTPException(
-                    status_code=500, 
-                    detail=f"Error processing file: {str(e)}"
-                )
-        @self.app.post("/lipsync/interrupt")
-        async def lipsync_interrupt():
-            try:
-                self.signals.wav_interrupted.emit("")
-            except Exception as e:
-                raise HTTPException(
-                    status_code=500,
-                    detail=f"Error interrupting lipsync: {str(e)}"
-                )
 
     def start_window(self, qt_app: QApplication):
         """启动窗口"""

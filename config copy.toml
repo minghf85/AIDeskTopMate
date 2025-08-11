@@ -1,0 +1,96 @@
+[general]
+project_name = "AIDeskTopMate"
+log_level = "INFO"
+debug_mode = true
+
+[agent]
+name = "AI助手"
+type = "langchain"
+personality = "友好、乐于助人、有点俏皮"
+
+[llm]
+platform = "openai"
+
+[actions]
+enabled = [ "dialog", "emotion", "memory", "web_search"]
+
+[llm.openai]
+api_key = ""
+model = "gpt-3.5-turbo"
+base_url = "https://api.openai.com/v1"
+
+
+[tts]
+# 运行模式选项（取消注释需要使用的模式）
+baseurl = "https://u73860-a17a-194f6518.nmb2.seetacloud.com:8443"
+# mode = "realtime"
+# play_device = 4  # 或者设置为你想要使用的输出设备索引
+save_audio = true
+# [tts.settings]
+# # engine = "edge"
+# # voice_name = "en-US-EricNeural"  # 确保设置的符合语言
+
+# engine = "kokoro"
+# voice_name = "af_bella"  # 确保设置的符合语言
+# engine = "azure"
+# voice_name = "AshleyNeural"  # 确保设置的符合语言
+
+mode = "GSV"
+
+[tts.settings]
+text = ""
+text_lang = "zh"
+ref_audio_path = "ref.mp3"
+aux_ref_audio_paths = []  # 辅助参考音频路径数组
+prompt_text = "无数次，在人世的焦土上，祈望太阳。"
+prompt_lang = "zh"
+
+# 生成参数
+top_k = 5
+top_p = 1.0
+temperature = 1.0
+repetition_penalty = 1.35
+seed = -1  # -1表示随机种子
+
+# 文本处理
+text_split_method = "cut0"
+batch_size = 5
+batch_threshold = 0.75
+split_bucket = false
+return_fragment = false
+
+# 语音控制
+speed_factor = 1.0  # 语速调节（1.0为正常速度）
+
+# 系统设置
+streaming_mode = true  # 是否启用流式生成
+parallel_infer = true   # 是否启用并行推理
+
+[stt]
+engine = "Sensevoice"
+
+[stt.settings]
+speaker = "speaker/久倾standard.wav"
+lang = "en" #可以改成zh, jp, en等
+
+[live2d]
+host= "127.0.0.1"
+port = 8000 # live2d control server的端口
+model_path = "Haru/Haru.model3.json" #运行body server 默认的live2d模型
+FPS = 60
+lipSyncN = 3
+# 可自定义表情和映射，动作描述和映射，可以添加和修改，下面为Haru的示例
+
+[live2d.available_expression]
+# 表情 SetExpression只需要str就行
+happy = ["F01","F02","F05"]
+angry = ["F03"]
+sad = ["F04"]
+shock = ["F06"]
+shy = ["F07"]
+neutral = ["F08"]
+
+[live2d.available_motion]
+# 动作 StartMotion需要动作组和index，名称为动作组，列表为描述，索引对应于motion索引
+idle = ["双手交叠放于腹前的礼仪站姿", "双手抱于胸前"]
+Tapbody = ["后退震惊下一跳", "讲解说明的姿势", "一手托腮在思考犹豫", "点头同意，招待"]

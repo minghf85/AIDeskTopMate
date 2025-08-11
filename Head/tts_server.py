@@ -4,7 +4,7 @@ import json
 import dotenv
 
 parser = argparse.ArgumentParser(description="Run the TTS FastAPI server.")
-parser.add_argument("-p", "--port", type=int, default=int(os.environ.get("TTS_FASTAPI_PORT", 8000)),
+parser.add_argument("-p", "--port", type=int, default=int(os.environ.get("TTS_FASTAPI_PORT", 8002)),
                     help="Port to run the FastAPI server on (default: 8000 or TTS_FASTAPI_PORT env var).")
 parser.add_argument('-D', '--debug', action='store_true', help='Enable debug logging for detailed server operations')
 
@@ -48,7 +48,7 @@ unknown_sentence_detection_pause = 0.4
 
 SUPPORTED_ENGINES = [
     "edge",  # comment edge out for tests where you need server start often,
-    # "kokoro",
+    "kokoro",
     "azure"
 ]
 
@@ -64,6 +64,7 @@ BROWSER_IDENTIFIERS = [
     "opera",
     "msie",
     "trident",
+    "streamlit",  # 添加streamlit客户端支持
 ]
 
 origins = [
@@ -343,7 +344,6 @@ def set_voice(request: Request, voice_name: str = Query(...)):
     if not current_engine:
         print("No engine is currently selected")
         return {"error": "No engine is currently selected"}
-
     try:
         print(f"Setting voice to {voice_name}")
         if current_engine.engine_name == "edge":
@@ -377,16 +377,31 @@ async def preview_tts(request: Request):
             if hasattr(engine, 'get_current_voice'):
                 original_voice = engine.get_current_voice()
             engine.set_voice(voice_name)
+            
             # 创建音频流
             audio_queue = Queue()
-            stream = TextToAudioStream(engine)
+            preview_stream = TextToAudioStream(engine, muted=True)
             
             def on_audio_chunk(chunk):
                 audio_queue.put(chunk)
-                
-            stream.feed(text)
-            stream.play(on_audio_chunk=on_audio_chunk, muted=True)
-            audio_queue.put(None)
+            
+            # 在线程中执行同步操作以避免事件循环冲突
+            import asyncio
+            import concurrent.futures
+            
+            def generate_audio():
+                try:
+                    preview_stream.feed(text)
+                    preview_stream.play(on_audio_chunk=on_audio_chunk, muted=True)
+                    audio_queue.put(None)
+                except Exception as e:
+                    logging.error(f"Error generating audio: {str(e)}")
+                    audio_queue.put(None)
+            
+            # 使用线程池执行器来运行同步代码
+            loop = asyncio.get_event_loop()
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                await loop.run_in_executor(executor, generate_audio)
             
             # 返回音频流
             return StreamingResponse(
@@ -501,6 +516,7 @@ if __name__ == "__main__":
             if azure_api_key and azure_region:
                 print("Initializing azure engine")
                 engines["azure"] = AzureEngine(azure_api_key, azure_region)
+                engines["azure"].engine_name = "azure"  # 设置引擎名称
 
         # if "elevenlabs" == engine_name:
         #     elevenlabs_api_key = os.environ.get("ELEVENLABS_API_KEY")
