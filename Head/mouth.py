@@ -185,3 +185,12 @@ class TTS_realtime(Mouth):
         
         self.audio_stream = TextToAudioStream(self.engine)
     
+    def speak(self, text):
+        """将文本添加到音频流中"""
+        self.audio_stream.feed(text)
+        self.audio_stream.play_async()
+
+
+if __name__ == "__main__":
+    tts = TTS_realtime()
+

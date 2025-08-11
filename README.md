@@ -141,3 +141,8 @@ TransparentLive2dWindow4pyqt6/
 现在有stt，tts，llm，我想要串通起来，为了做到低延迟、打断、交流顺畅等等，我应该怎么管理，stt、tts部分需要哪些功能
 目前我对于stt部分是设置一个断句的参数，两个完整句子的时间间隔，识别到一个完整句子直接发送给llm；llm流式输出，通过标点符号进行句子分段，
 
+
+
+```
+python -m Head.Brain.brain
+```

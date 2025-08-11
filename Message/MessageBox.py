@@ -211,13 +211,13 @@ class MessageBox(QWidget):
     def update_text(self, text):
         """更新文本内容（用于流式显示）"""
         if text:
-            # 累积文本到缓冲区
-            self.llm_content_buffer += text
-            # 清理和格式化文本
-            display_text = re.sub(r'\s+', ' ', self.llm_content_buffer.strip())
+            # 累积文本
+            self.current_text += text
+            # 移除多余的空白字符
+            display_text = re.sub(r'\s+', ' ', self.current_text.strip())
             self.content_label.setText(display_text)
             # 调整窗口大小以适应文本
-            self.adjust_window_size()
+            self.adjustSize()
     
     def update_stream_display(self):
         """更新流式显示"""
@@ -389,13 +389,10 @@ if __name__ == "__main__":
     message_box = MessageBox()
     message_box.show()
     
-    # 测试LLM流式输出
-    accumulated_text = ""
     for chunk in llm.stream([HumanMessage("你好，请介绍一下你自己，并且详细说明你的功能和特点。")]):
         if chunk.content:
-            accumulated_text += chunk.content
             # 清除之前的内容并显示累积的文本
-            message_box.show_text(accumulated_text)
+            message_box.update_text(chunk.content)
             # 处理Qt事件循环以更新UI
             app.processEvents()
     

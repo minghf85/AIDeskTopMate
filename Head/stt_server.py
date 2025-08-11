@@ -20,6 +20,9 @@ import sys
 import json
 import traceback
 import time
+from dotmap import DotMap
+import toml
+
 
 logger.remove()
 log_format = "{time:YYYY-MM-DD HH:mm:ss} [{level}] {file}:{line} - {message}"
@@ -192,9 +195,7 @@ model_vad = AutoModel(
     # device="cpu"
 )
 
-reg_spks_files = [
-    "speaker/久倾standard.wav"
-]
+reg_spks_files = DotMap(toml.load("config.toml")).asr.settings.speakers
 
 def reg_spk_init(files):
     reg_spk = {}
