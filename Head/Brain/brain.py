@@ -41,12 +41,13 @@ class Brain:
         self.ear = ASR(url=config.asr.settings.url, lang=config.asr.settings.lang, sv=config.asr.settings.sv)
         
         # 连接ASR信号到处理方法
+        self.ear.transcriptionStart.connect(self.handel_interrupt)
         self.ear.transcriptionReady.connect(self.handle_transcription)
         self.ear.errorOccurred.connect(self.handle_asr_error)
         
         # 设置音频设备并启动ASR
         try:
-            self.ear.setup_audio()
+            self.ear.setup_audio_stream()
             self.ear.start()
             logger.info("ASR已启动")
         except Exception as e:
@@ -121,6 +122,12 @@ class Brain:
                 logger.error(f"处理AIFE响应时出错: {e}")
                 if self.msg:
                     self.msg.show_text(f"AI处理错误: {str(e)}")
+
+    def handle_interrupt(self):
+        """打断正在说话"""
+        if self.mouth:
+            self.mouth.audio_stream.stop()
+            logger.info("打断说话")
 
     def handle_asr_error(self, error: str):
         """处理ASR错误"""

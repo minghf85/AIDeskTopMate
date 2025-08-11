@@ -195,7 +195,7 @@ model_vad = AutoModel(
     # device="cpu"
 )
 
-reg_spks_files = DotMap(toml.load("config.toml")).asr.settings.speakers
+reg_spks_files = DotMap(toml.load("config.toml")).asr.settings.speakers if DotMap(toml.load("config.toml")).asr.settings.speakers else []
 
 def reg_spk_init(files):
     reg_spk = {}
@@ -294,8 +294,7 @@ def root():
 async def websocket_endpoint(websocket: WebSocket):
     try:
         query_params = parse_qs(websocket.scope['query_string'].decode())
-        sv = True
-        #sv = query_params.get('sv', ['false'])[0].lower() in ['true', '1', 't', 'y', 'yes']
+        sv = query_params.get('sv', ['false'])[0].lower() in ['true', '1', 't', 'y', 'yes']
         lang = query_params.get('lang', ['auto'])[0].lower()
         
         await websocket.accept()
@@ -406,7 +405,7 @@ async def websocket_endpoint(websocket: WebSocket):
                             hit = False
                             
                             if  result is not None:
-                                result[0]['speaker']=spk
+                                result[0]['speaker'] = spk if sv else ""
                                 response = TranscriptionResponse(
                                     code=0,
                                     info=json.dumps(result[0], ensure_ascii=False),

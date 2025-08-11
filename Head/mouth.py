@@ -14,8 +14,13 @@ from requests.auth import CONTENT_TYPE_FORM_URLENCODED
 from dotmap import DotMap
 import toml
 import streamlit as st
-
+from dotenv import load_dotenv
 from RealtimeTTS import TextToAudioStream, AzureEngine, EdgeEngine, KokoroEngine
+
+load_dotenv()
+
+azure_api_key = os.environ.get("AZURE_SPEECH_KEY")
+azure_region = os.environ.get("AZURE_SPEECH_REGION")
 
 # 读取toml的live2d配置
 config = DotMap(toml.load("config.toml"))
@@ -175,7 +180,7 @@ class TTS_realtime(Mouth):
         super().__init__()
         self.stream = stream
         if config.tts.settings.engine == "azure":
-            self.engine = AzureEngine()
+            self.engine = AzureEngine(azure_api_key, azure_region)
         elif config.tts.settings.engine == "edge":
             self.engine = EdgeEngine()
         elif config.tts.settings.engine == "kokoro":
@@ -183,6 +188,7 @@ class TTS_realtime(Mouth):
         else:
             raise ValueError("未知的 TTS 引擎")
         
+        self.engine.set_voice(config.tts.settings.voice_name)
         self.audio_stream = TextToAudioStream(self.engine)
     
     def speak(self, text):

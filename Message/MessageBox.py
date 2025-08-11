@@ -56,7 +56,7 @@ class MessageBox(QWidget):
         self.current_movie = None
         
         # 背景透明度设置 (0.0-1.0)
-        self.background_opacity = 0
+        self.background_opacity = 0.5
         self.update_background_style()
 
     def update_background_style(self):

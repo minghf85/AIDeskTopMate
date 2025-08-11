@@ -12,6 +12,7 @@ from langchain.prompts import PromptTemplate
 from langchain.memory import ConversationBufferMemory, ChatMessageHistory
 from langchain.schema import BaseMemory
 from langchain_openai import ChatOpenAI
+from langchain_ollama import ChatOllama
 
 # 导入本地模块
 from Actions.action import ActionRegistry, Action
@@ -19,7 +20,7 @@ from Actions.action import ActionRegistry, Action
 # 定义AIFE类
 class AIFE:
     def __init__(self, platform, llm_config) -> None:
-        self.llm = ChatOpenAI(**llm_config)
+        self.llm = self._initialize_llm(platform, llm_config)
         self.short_term_memory = ChatMessageHistory()
 
     def common_chat(self, user_input: str) -> Generator[Union[str, AIMessageChunk], None, None]:
@@ -48,3 +49,11 @@ class AIFE:
             
         except Exception as e:
             raise RuntimeError(f"模型调用失败: {str(e)}") from e
+        
+    def _initialize_llm(self, platform: str, llm_config: Dict[str, Any]):
+        if platform == "openai":
+            return ChatOpenAI(**llm_config)
+        elif platform == "ollama":
+            return ChatOllama(**llm_config)
+        else:
+            raise ValueError(f"Unsupported platform: {platform}")
