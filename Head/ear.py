@@ -13,7 +13,6 @@ import io
 import sys
 from dotmap import DotMap
 import toml
-
 config = DotMap(toml.load("config.toml"))
 class ASR(QThread):
     """
@@ -48,7 +47,6 @@ class ASR(QThread):
         self.running = False
         self.ws = None
         self.is_hearing = False  # 是否正在听到声音
-        
         # 音频配置
         self.format = pyaudio.paInt16
         self.channels = channels
@@ -97,7 +95,6 @@ class ASR(QThread):
                 if audio_data and len(audio_data) > 0:
                     try:
                         await self.ws.send(audio_data)
-                        logger.debug(f"发送音频数据: {len(audio_data)} 字节")
                     except websockets.exceptions.ConnectionClosed:
                         logger.warning("WebSocket 连接已关闭")
                         break
@@ -126,13 +123,11 @@ class ASR(QThread):
                     logger.debug(f"收到消息: {res_json}")
                     
                     # 处理检测到语音/说话人的信号
-                    if res_json.get("code") == 2:
+                    if res_json.get("code") == 1:
                         info = res_json.get("info", "")
-                        if "detect speaker" in info or "detect speech" in info:
-                            logger.info(f"检测到语音活动: {info}")
-                            self.is_hearing = True
-                            # 发射hearStart信号，表示开始听到声音
-                            self.hearStart.emit()
+                        logger.info(f"检测到语音活动: {info}")
+                        self.is_hearing = True
+                        self.hearStart.emit()
                             
 
                     
@@ -144,7 +139,6 @@ class ASR(QThread):
                             
                             # 发射转录完成信号
                             self.transcriptionReady.emit(transcription)
-                            
                             # 重置状态
                             self.is_hearing = False
                             

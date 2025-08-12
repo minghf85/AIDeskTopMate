@@ -20,9 +20,10 @@ from Actions.action import ActionRegistry, Action
 
 # 定义AIFE类
 class AIFE:
-    def __init__(self, platform, llm_config) -> None:
+    def __init__(self, platform, llm_config, stream_chat_callback) -> None:
         self.llm = self._initialize_llm(platform, llm_config)
         self.short_term_memory = ChatMessageHistory()
+        self.stream_chat_callback = stream_chat_callback
 
     def common_chat(self, user_input: str) -> Generator[Union[str, AIMessageChunk], None, None]:
         """流式聊天对话生成器
@@ -43,10 +44,11 @@ class AIFE:
 
             # 遍历流式响应
             for chunk in self.llm.stream(messages):
-                time.sleep(0.1)  # 模拟处理延迟
                 if isinstance(chunk, AIMessageChunk):
+                    self.stream_chat_callback(chunk.content)
                     yield chunk.content  # 产出文本内容
                 else:
+                    self.stream_chat_callback(str(chunk))
                     yield str(chunk)  # 兜底处理其他类型
             
         except Exception as e:

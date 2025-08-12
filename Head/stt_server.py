@@ -307,6 +307,7 @@ async def websocket_endpoint(websocket: WebSocket):
         offset = 0
         hit = False
         spk = 'unknown'  # 初始化说话人变量
+        speech_detected_sent = False  # 添加标志变量，跟踪是否已发送语音检测信号
         
         buffer = b""
         while True:
@@ -335,39 +336,6 @@ async def websocket_endpoint(websocket: WebSocket):
                 
                 # with open('chunk.pcm', 'ab') as f:
                 #     logger.debug(f'write {f.write(chunk)} bytes to `chunk.pcm`')
-                    
-                if last_vad_beg > 1:
-                    # 无论是否启用说话人验证，都要发送语音检测信号
-                    if sv:
-                        # speaker verify
-                        # If no hit is detected, continue accumulating audio data and check again until a hit is detected
-                        # `hit` will reset after `asr`.
-                        if not hit:
-                            hit, speaker = speaker_verify(audio_vad[int((last_vad_beg - offset) * config.sample_rate / 1000):], config.sv_thr)
-                            if hit:
-                                spk = speaker
-                                response = TranscriptionResponse(
-                                    code=2,
-                                    info="detect speaker",
-                                    data=speaker
-                                )
-                            else:
-                                spk = 'unknown'
-                                response = TranscriptionResponse(
-                                    code=2,
-                                    info="detect speech",
-                                    data='unknown'
-                                )
-                            await websocket.send_json(response.model_dump())
-                    else:
-                        # 不启用说话人验证时，直接发送语音检测信号
-                        spk = 'unknown'
-                        response = TranscriptionResponse(
-                            code=2,
-                            info="detect speech",
-                            data='unknown'
-                        )
-                        await websocket.send_json(response.model_dump())
 
                 res = model_vad.generate(input=chunk, cache=cache, is_final=False, chunk_size=config.chunk_size_ms)
                 # logger.info(f"vad inference: {res}")
@@ -375,7 +343,49 @@ async def websocket_endpoint(websocket: WebSocket):
                     vad_segments = res[0]["value"]
                     for segment in vad_segments:
                         if segment[0] > -1: # speech begin
-                            last_vad_beg = segment[0]                           
+                            last_vad_beg = segment[0]
+                            # 首先发送语音检测信号
+                            response = TranscriptionResponse(
+                                code=1,
+                                info="detect speech",
+                                data="1"
+                            )
+                            await websocket.send_json(response.model_dump())
+                            
+                            # 只在尚未发送说话人验证信号时发送
+                            if not speech_detected_sent:
+                                if sv:
+                                    # speaker verify
+                                    # If no hit is detected, continue accumulating audio data and check again until a hit is detected
+                                    # `hit` will reset after `asr`.
+                                    if not hit:
+                                        hit, speaker = speaker_verify(audio_vad[int((last_vad_beg - offset) * config.sample_rate / 1000):], config.sv_thr)
+                                        if hit:
+                                            spk = speaker
+                                            response = TranscriptionResponse(
+                                                code=2,
+                                                info="detect speaker",
+                                                data=speaker
+                                            )
+                                        else:
+                                            spk = 'unknown'
+                                            response = TranscriptionResponse(
+                                                code=2,
+                                                info="detect unknown speaker",
+                                                data='unknown'
+                                            )
+                                        await websocket.send_json(response.model_dump())
+                                else:
+                                    # 不启用说话人验证时，直接发送语音检测信号
+                                    spk = 'unknown'
+                                    response = TranscriptionResponse(
+                                        code=2,
+                                        info="detect unknown speaker",
+                                        data='unknown'
+                                    )
+                                    await websocket.send_json(response.model_dump())
+                                speech_detected_sent = True  # 标记已发送语音检测信号
+                                           
                         if segment[1] > -1: # speech end
                             last_vad_end = segment[1]
                         if last_vad_beg > -1 and last_vad_end > -1:
@@ -391,6 +401,7 @@ async def websocket_endpoint(websocket: WebSocket):
                             audio_vad = audio_vad[end:]
                             last_vad_beg = last_vad_end = -1
                             hit = False
+                            speech_detected_sent = False  # 重置标志，准备下一段语音
                             
                             if  result is not None:
                                 result[0]['speaker'] = spk if sv else ""
@@ -400,19 +411,6 @@ async def websocket_endpoint(websocket: WebSocket):
                                     data=format_str_v3(result[0]['text'])
                                 )
                                 await websocket.send_json(response.model_dump())
-                                # if hit:
-                                #     response = TranscriptionResponse(
-                                #         code=0,
-                                #         info="transcription result",
-                                #         data=speaker+format_str_v3(result[0]['text'])
-                                #     )
-                                # else:
-                                #     # 如果无法识别说话人，则返回 unknown:{text}
-                                #     response = TranscriptionResponse(
-                                #         code=0,
-                                #         info="transcription result",
-                                #         data='unknown'+format_str_v3(result[0]['text'])
-                                #     )
                         # logger.debug(f'last_vad_beg: {last_vad_beg}; last_vad_end: {last_vad_end} len(audio_vad): {len(audio_vad)}')
 
     except WebSocketDisconnect:

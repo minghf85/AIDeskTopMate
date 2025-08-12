@@ -14,7 +14,7 @@ from dotmap import DotMap
 import toml
 import streamlit as st
 from dotenv import load_dotenv
-from RealtimeTTS import TextToAudioStream, AzureEngine, EdgeEngine, KokoroEngine
+from RealtimeTTS import TextToAudioStream
 import loguru
 
 logger = loguru.logger
@@ -35,29 +35,40 @@ class TTS_realtime():
     def __init__(self):
         super().__init__()
         if config.tts.settings.engine == "azure":
+            from RealtimeTTS import AzureEngine
             self.engine = AzureEngine(azure_api_key, azure_region)
         elif config.tts.settings.engine == "edge":
+            from RealtimeTTS import EdgeEngine
             self.engine = EdgeEngine()
         elif config.tts.settings.engine == "kokoro":
+            from RealtimeTTS import KokoroEngine
             self.engine = KokoroEngine()
         else:
             raise ValueError("未知的 TTS 引擎")
         
         self.engine.set_voice(config.tts.settings.voice_name)
+
         self.stream = TextToAudioStream(
             self.engine,
             on_audio_stream_start=self.on_audio_stream_start,
             )
-    
-    def speak(self, text):
+        self.stream.play_async()
+
+    def speak(self, stream):
+        """将文本添加到音频流中"""
+        self.stream.feed(stream)
+
+    def speak_text(self, text):
         """将文本添加到音频流中"""
         self.stream.feed(text)
-        self.stream.play_async()
-    
+
     def on_audio_stream_start(self):
         """音频流开始播放时的回调"""
         logger.info("音频流开始播放")
 
-if __name__ == "__main__":
-    tts = TTS_realtime()
+
+    
+
+# if __name__ == "__main__":
+#     tts = TTS_realtime()
 
