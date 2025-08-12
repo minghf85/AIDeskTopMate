@@ -7,19 +7,21 @@ import asyncio
 import websockets
 import pyaudio
 from PyQt6.QtCore import QThread, pyqtSignal, QTimer
+from PyQt6.QtWidgets import QApplication
 import threading
 import io
+import sys
 from dotmap import DotMap
 import toml
 
 config = DotMap(toml.load("config.toml"))
-
 class ASR(QThread):
     """
     参考 client_wss.html 重新设计的 ASR 类
     使用定时发送音频数据的方式，简化连接逻辑
     """
     # 定义信号
+    hearStart = pyqtSignal()
     transcriptionStart = pyqtSignal()
     transcriptionReady = pyqtSignal(str)  # 转录文本信号
     errorOccurred = pyqtSignal(str)       # 错误信号
@@ -29,8 +31,7 @@ class ASR(QThread):
                  sv: int = 0,
                  sample_rate: int = 16000,
                  channels: int = 1,
-                 chunk_size: int = 4096,
-                 send_interval: float = 0.5):
+                 chunk_size: int = 4096):
         super().__init__()
         
         # WebSocket 配置
@@ -42,17 +43,17 @@ class ASR(QThread):
             query_params.append(f"sv={sv}")
         query_string = '?' + '&'.join(query_params) if query_params else ''
         self.url = base_url + query_string
-        
+
         # 运行状态
         self.running = False
         self.ws = None
+        self.is_hearing = False  # 是否正在听到声音
         
         # 音频配置
         self.format = pyaudio.paInt16
         self.channels = channels
         self.sample_rate = sample_rate
         self.chunk_size = chunk_size
-        self.send_interval = send_interval  # 发送间隔（秒）
         
         # 音频组件
         self.pyaudio_instance = None
@@ -62,9 +63,8 @@ class ASR(QThread):
         
         # 事件循环
         self.event_loop = None
-        self.send_timer = None
 
-        logger.info(f"ASR 初始化完成: URL={self.url}, 采样率={self.sample_rate}, 发送间隔={self.send_interval}s")
+        logger.info(f"ASR 初始化完成: URL={self.url}, 采样率={self.sample_rate}")
 
     def audio_callback(self, in_data, frame_count, time_info, status):
         """音频回调函数 - 收集音频数据到缓冲区"""
@@ -88,7 +88,7 @@ class ASR(QThread):
             return audio_data
 
     async def send_audio_data(self):
-        """定时发送音频数据"""
+        """发送音频数据"""
         try:
             while self.running and self.ws:
                 # 获取音频数据
@@ -105,8 +105,8 @@ class ASR(QThread):
                         logger.error(f"发送音频数据错误: {e}")
                         break
                 
-                # 等待下一次发送
-                await asyncio.sleep(self.send_interval)
+                # 使用很小的延迟以避免CPU过度使用
+                await asyncio.sleep(0.5)
                 
         except asyncio.CancelledError:
             logger.info("音频发送已停止")
@@ -115,17 +115,38 @@ class ASR(QThread):
 
     async def receive_messages(self):
         """接收 WebSocket 消息"""
+        if not self.ws:
+            logger.error("WebSocket 连接未建立")
+            return
+            
         try:
             async for message in self.ws:
                 try:
                     res_json = json.loads(message)
                     logger.debug(f"收到消息: {res_json}")
                     
-                    if res_json.get("code") == 0:
+                    # 处理检测到语音/说话人的信号
+                    if res_json.get("code") == 2:
+                        info = res_json.get("info", "")
+                        if "detect speaker" in info or "detect speech" in info:
+                            logger.info(f"检测到语音活动: {info}")
+                            self.is_hearing = True
+                            # 发射hearStart信号，表示开始听到声音
+                            self.hearStart.emit()
+                            
+
+                    
+                    # 处理转录结果
+                    elif res_json.get("code") == 0:
                         transcription = res_json.get("data", "")
                         if transcription.strip():
                             logger.info(f"转录结果: {transcription}")
+                            
+                            # 发射转录完成信号
                             self.transcriptionReady.emit(transcription)
+                            
+                            # 重置状态
+                            self.is_hearing = False
                             
                 except json.JSONDecodeError:
                     logger.error(f"解析响应失败: {message}")
@@ -212,6 +233,9 @@ class ASR(QThread):
         """清理资源"""
         logger.info("正在清理 ASR 资源...")
         
+        # 重置状态
+        self.is_hearing = False
+        
         # 清理音频资源
         if self.audio_stream:
             try:
@@ -247,6 +271,11 @@ class ASR(QThread):
         
         logger.info("ASR 资源清理完成")
 
+    def reset_state(self):
+        """重置听音和转录状态"""
+        self.is_hearing = False
+        logger.info("ASR 状态已重置")
+
     def get_status(self):
         """获取当前状态"""
         return {
@@ -254,10 +283,19 @@ class ASR(QThread):
             'url': self.url,
             'sample_rate': self.sample_rate,
             'channels': self.channels,
-            'send_interval': self.send_interval,
-            'connected': self.ws is not None
+            'connected': self.ws is not None,
+            'is_hearing': self.is_hearing
         }
 
+def detect_voice():
+    logger.info("检测到语音活动，开始识别...")
+
+def start_recognition():
+    logger.info("开始语音识别...")
+
 if __name__ == "__main__":
+    app = QApplication(sys.argv)
     asr = ASR(url=config.asr.settings.url)
+    asr.hearStart.connect(detect_voice)
+    asr.transcriptionStart.connect(start_recognition)
     asr.run()

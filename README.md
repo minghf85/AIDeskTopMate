@@ -135,7 +135,6 @@ TransparentLive2dWindow4pyqt6/
 - openai：OpenAI API接口
 - chroma-db：向量数据库，用于存储和检索记忆
 - llama-cpp-python：本地LLM模型支持
-- gpt4all：本地LLM模型支持
 
 
 现在有stt，tts，llm，我想要串通起来，为了做到低延迟、打断、交流顺畅等等，我应该怎么管理，stt、tts部分需要哪些功能

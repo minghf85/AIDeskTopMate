@@ -9,6 +9,7 @@ from PyQt6.QtOpenGLWidgets import QOpenGLWidget
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtGui import QGuiApplication
 from Head.mouth import TTS_GSV, TTS_realtime
+from Message.MessageBox import MessageBox
 import win32gui
 import win32con
 import win32api
@@ -72,6 +73,7 @@ class TransparentLive2dWindow(QOpenGLWidget):
         self.state = Live2DState()
         self.mutex = QMutex()
         self.SetAndAdd =SetAndAddController()
+        self.msgbox = MessageBox()
         #self.wavHandler = WavHandler()
         self.mouth = mouth
         # 用于存储API查询结果
@@ -569,8 +571,8 @@ class TransparentLive2dWindow(QOpenGLWidget):
         if self.model:
             live2d.clearBuffer()
             self.model.Update(1.0/FPS)
-            if self.mouth.wav_handler.Update():
-                self.model.SetParameterValueById("ParamMouthOpenY", self.mouth.wav_handler.GetRms() * lipSyncN, 1)
+            if self.mouth.stream.is_playing():
+                self.model.SetParameterValueById("ParamMouthOpenY", self.mouth.stream.GetRms() * lipSyncN, 1)
             if self.SetAndAdd.isrunning:
                 if self.SetAndAdd.set_id:
                     self.model.SetParameterValueById(self.SetAndAdd.set_id, self.SetAndAdd.set_value, self.SetAndAdd.set_weight)

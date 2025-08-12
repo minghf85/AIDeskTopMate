@@ -2,6 +2,7 @@ from typing import Dict, Any, List, Optional, Callable, Generator, Union
 import logging
 from abc import ABC, abstractmethod
 from dotmap import DotMap
+import time
 import toml
 
 config = DotMap(toml.load("config.toml"))
@@ -42,6 +43,7 @@ class AIFE:
 
             # 遍历流式响应
             for chunk in self.llm.stream(messages):
+                time.sleep(0.1)  # 模拟处理延迟
                 if isinstance(chunk, AIMessageChunk):
                     yield chunk.content  # 产出文本内容
                 else:
@@ -57,3 +59,4 @@ class AIFE:
             return ChatOllama(**llm_config)
         else:
             raise ValueError(f"Unsupported platform: {platform}")
+        

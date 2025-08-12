@@ -188,8 +188,7 @@ model_vad = AutoModel(
     model="fsmn-vad",
     model_revision="v2.0.4",
     disable_pbar = True,
-    max_end_silence_time=800,
-    speech_noise_thres=0.6,
+    max_end_silence_time=1000,
     disable_update=True,
     device="cuda:0",
     # device="cpu"
@@ -307,6 +306,7 @@ async def websocket_endpoint(websocket: WebSocket):
         last_vad_beg = last_vad_end = -1
         offset = 0
         hit = False
+        spk = 'unknown'  # 初始化说话人变量
         
         buffer = b""
         while True:
@@ -337,27 +337,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 #     logger.debug(f'write {f.write(chunk)} bytes to `chunk.pcm`')
                     
                 if last_vad_beg > 1:
-                    # if sv:
-                    #     # speaker verify
-                    #     # If no hit is detected, continue accumulating audio data and check again until a hit is detected
-                    #     # `hit` will reset after `asr`.
-                    #     if not hit:
-                    #         hit, speaker = speaker_verify(audio_vad[int((last_vad_beg - offset) * config.sample_rate / 1000):], config.sv_thr)
-                    #         if hit:
-                    #             response = TranscriptionResponse(
-                    #                 code=2,
-                    #                 info="detect speaker",
-                    #                 data=speaker
-                    #             )
-                    #             await websocket.send_json(response.model_dump())
-                    # else:
-                    #     response = TranscriptionResponse(
-                    #         code=2,
-                    #         info="detect speech",
-                    #         data='unknown'
-                    #     )
-
-                    #返回说话人
+                    # 无论是否启用说话人验证，都要发送语音检测信号
                     if sv:
                         # speaker verify
                         # If no hit is detected, continue accumulating audio data and check again until a hit is detected
@@ -365,20 +345,28 @@ async def websocket_endpoint(websocket: WebSocket):
                         if not hit:
                             hit, speaker = speaker_verify(audio_vad[int((last_vad_beg - offset) * config.sample_rate / 1000):], config.sv_thr)
                             if hit:
-                                spk=speaker
+                                spk = speaker
                                 response = TranscriptionResponse(
                                     code=2,
                                     info="detect speaker",
                                     data=speaker
                                 )
-
                             else:
-                                spk='unknown'
+                                spk = 'unknown'
                                 response = TranscriptionResponse(
                                     code=2,
                                     info="detect speech",
                                     data='unknown'
                                 )
+                            await websocket.send_json(response.model_dump())
+                    else:
+                        # 不启用说话人验证时，直接发送语音检测信号
+                        spk = 'unknown'
+                        response = TranscriptionResponse(
+                            code=2,
+                            info="detect speech",
+                            data='unknown'
+                        )
                         await websocket.send_json(response.model_dump())
 
                 res = model_vad.generate(input=chunk, cache=cache, is_final=False, chunk_size=config.chunk_size_ms)
