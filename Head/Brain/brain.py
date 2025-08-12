@@ -101,7 +101,7 @@ class Brain:
         self.body = self.activate_body()
         # 连接文本更新信号
         self.text_signals.update_text.connect(self.window.msgbox.update_text)
-        self.agent = AIFE(platform=config.llm.platform, llm_config=config.llm.llm_config, stream_chat_callback=self.show_character)
+        self.agent = AIFE(agent_config=config.agent, body=self.body, stream_chat_callback=self.show_character)
 
     def activate_body(self):
         self.signals = Live2DSignals()

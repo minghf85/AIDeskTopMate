@@ -1,8 +1,12 @@
 live2d-py
 pyqt6
 langchain
+langchain-community
+langchain-openai
+langchain-ollama
 openai
 chroma-db
+faiss-cpu
 pydantic
 python-dotenv
 llama-cpp-python
@@ -23,3 +27,6 @@ soundfile
 modelscope
 loguru
 RealtimeTTS
+# 新增的依赖
+dotmap
+dataclasses-json
