@@ -16,6 +16,7 @@ import streamlit as st
 from dotenv import load_dotenv
 from RealtimeTTS import TextToAudioStream
 import loguru
+import logging
 
 logger = loguru.logger
 load_dotenv()
@@ -32,8 +33,11 @@ class TTS_GSV():
     pass
 
 class TTS_realtime():
-    def __init__(self):
+    def __init__(self, on_word=None, on_character=None, on_audio_stream_start=None):
         super().__init__()
+        self.on_word = on_word
+        self.on_character = on_character
+        self.on_audio_stream_start = on_audio_stream_start
         if config.tts.settings.engine == "azure":
             from RealtimeTTS import AzureEngine
             self.engine = AzureEngine(azure_api_key, azure_region)
@@ -45,14 +49,19 @@ class TTS_realtime():
             self.engine = KokoroEngine()
         else:
             raise ValueError("未知的 TTS 引擎")
-        
-        self.engine.set_voice(config.tts.settings.voice_name)
+        if config.tts.settings.voice_name == "Neuro":
+            self.engine.set_voice("AshleyNeural")
+            self.engine.set_voice_parameters(pitch=25)
+        else:
+            self.engine.set_voice(config.tts.settings.voice_name)
 
         self.stream = TextToAudioStream(
             self.engine,
-            on_audio_stream_start=self.on_audio_stream_start,
+            on_audio_stream_start=self.on_audio_stream_start if self.on_audio_stream_start else lambda x: None,
+            on_word=self.on_word if self.on_word else lambda x: None,
+            on_character=self.on_character if self.on_character else lambda x: None
             )
-        self.stream.play_async()
+        self.latency = 0
 
     def speak(self, stream):
         """将文本添加到音频流中"""
@@ -61,12 +70,6 @@ class TTS_realtime():
     def speak_text(self, text):
         """将文本添加到音频流中"""
         self.stream.feed(text)
-
-    def on_audio_stream_start(self):
-        """音频流开始播放时的回调"""
-        logger.info("音频流开始播放")
-
-
     
 
 # if __name__ == "__main__":

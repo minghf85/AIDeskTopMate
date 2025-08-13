@@ -142,8 +142,3 @@ TransparentLive2dWindow4pyqt6/
 
 
 
-```
-python -m Head.Brain.brain
-```
-
-mpv安装并添加到环境变量

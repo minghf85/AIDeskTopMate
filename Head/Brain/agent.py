@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from dotmap import DotMap
+from Body.tlw import Live2DSignals
 import toml
 
 config = DotMap(toml.load("config.toml"))
@@ -29,165 +30,147 @@ from langchain_openai import OpenAIEmbeddings
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 
 
+live2dsignal = Live2DSignals()
 
-
-
-# ============ 行为系统 ============
-
-class ActionType(Enum):
-    """行为类型"""
-    # # 细粒度行为
-    # MOVE = "move"
-    # ROTATE = "rotate"
-    # SCALE = "scale"
+@dataclass
+class Action:
+    """智能体动作基类"""
+    name: str
+    description: str
+    parameters: Dict[str, Any]
     
-    # # 粗粒度行为
-    CHAT = "chat"
-    # PLAY_SOUND = "play_sound"
-    # WEB_SEARCH = "web_search"
-    # SEND_IMAGE = "send_image"
-    # SEND_EMOJI = "send_emoji"
-    # READ_IMAGE = "read_image"
-    # READ_VIDEO = "read_video"
+    def validate_parameters(self, params: Dict[str, Any]) -> bool:
+        """验证输入参数是否符合要求"""
+        required_params = set(self.parameters.keys())
+        provided_params = set(params.keys())
+        
+        # 检查必填参数
+        if required_params != provided_params:
+            missing = required_params - provided_params
+            raise ValueError(f"缺少必要参数: {missing}")
+            
+        # 类型检查 (简化版)
+        for param, spec in self.parameters.items():
+            if not isinstance(params[param], spec["type"]):
+                raise TypeError(f"参数 '{param}' 需要 {spec['type']} 类型")
+                
+        # 自定义验证
+        if hasattr(self, "_custom_validate"):
+            return self._custom_validate(params)
+            
+        return True
     
-    # 表情和动作
-    EXPRESSION = "expression"
-    MOTION = "motion"
-
-
-# class SetExpressionTool(BaseTool):
-#     """设置表情行为工具"""
-#     name = "set_expression"
-#     description = """设置Live2D角色的表情。
-#     可用表情：
-#     - happy: 开心表情 (F01, F02, F05)
-#     - angry: 生气表情 (F03)
-#     - sad: 悲伤表情 (F04)
-#     - shock: 震惊表情 (F06)
-#     - shy: 害羞表情 (F07)
-#     - neutral: 中性表情 (F08)
+    def execute(self, **kwargs) -> Any:
+        """执行动作（子类必须实现）"""
+        raise NotImplementedError("子类必须实现 execute 方法")
     
-#     参数格式：表情名称，如 'happy', 'sad', 'angry' 等"""
+class SetExpression(Action):
+    def __init__(self):
+        # 动态加载配置
+        config = DotMap(toml.load("config.toml"))
+        available_expressions = list(config.live2d.available_expression.keys())
+        super().__init__(
+            name="set_expression",
+            description="set your personal live2d expression",
+            parameters={
+                "expression": {
+                    "type": str,
+                    "description": "expression name",
+                    "enum": available_expressions  # 可选值限制
+                }
+            }
+        )
     
-#     def __init__(self, body=None):
-#         super().__init__()
-#         self.body = body
-#         self.available_expressions = config.live2d.available_expression
-
-#     def _run(self, expression: str) -> str:
-#         """执行设置表情行为"""
-#         try:
-#             if not self.body or not hasattr(self.body, 'SetExpression'):
-#                 return "错误：body对象不存在或没有SetExpression方法"
-            
-#             # 检查表情是否可用
-#             if expression not in self.available_expressions:
-#                 available = ', '.join(self.available_expressions.keys())
-#                 return f"错误：表情 '{expression}' 不可用。可用表情：{available}"
-            
-#             # 随机选择一个表情文件
-#             import random
-#             expression_files = self.available_expressions[expression]
-#             selected_expression = random.choice(expression_files)
-            
-#             self.body.SetExpression(selected_expression)
-#             logging.info(f"设置表情: {expression} -> {selected_expression}")
-#             return f"成功设置表情为 {expression}"
-            
-#         except Exception as e:
-#             error_msg = f"设置表情失败: {e}"
-#             logging.error(error_msg)
-#             return error_msg
-
-# class StartMotionTool(BaseTool):
-#     """开始动作行为工具"""
-#     name = "start_motion"
-#     description = """开始Live2D角色的动作。
-#     可用动作组：
-#     - idle: 闲置动作 (双手交叠放于腹前的礼仪站姿, 双手抱于胸前)
-#     - Tapbody: 互动动作 (后退震惊下一跳, 讲解说明的姿势, 一手托腮在思考犹豫, 点头同意招待)
+    def _custom_validate(self, params: Dict[str, Any]) -> bool:
+        """自定义验证逻辑"""
+        if params["expression"] not in self.parameters["expression"]["enum"]:
+            raise ValueError(
+                f"Not a valid expression: {self.parameters['expression']['enum']}"
+            )
+        return True
     
-#     参数格式：动作组名称,索引 如 'idle,0' 或 'Tapbody,1'"""
+    def execute(self, expression: str) -> str:
+        """执行表情设置"""
+        live2dsignal.expression_requested.emit(expression)
+        return f"expression has been set: {expression}"
     
-#     def __init__(self, body=None):
-#         super().__init__()
-#         self.body = body
-#         self.available_motions = config.live2d.available_motion
+class StartMotion(Action):
+    """开始Live2D动作的动作类"""
+    def __init__(self):
+        # 动态加载配置
+        config = DotMap(toml.load("config.toml"))
+        self.motion_groups = config.live2d.available_motion
+        
+        # 构建动作描述字典
+        motion_descriptions = {}
+        for group, descriptions in self.motion_groups.items():
+            for idx, desc in enumerate(descriptions):
+                motion_descriptions[f"{group}_{idx}"] = desc
+                
+        super().__init__(
+            name="start_motion",
+            description="start a live2d motion by specifying the motion group and index",
+            parameters={
+                "motion_name": {
+                    "type": str,
+                    "description": "motion name in format 'group_index'",
+                    "enum": list(motion_descriptions.keys()),  # 可用动作列表
+                    "descriptions": motion_descriptions  # 动作描述字典
+                }
+            }
+        )
 
-#     def _run(self, motion_param: str) -> str:
-#         """执行开始动作行为"""
-#         try:
-#             if not self.body or not hasattr(self.body, 'StartMotion'):
-#                 return "错误：body对象不存在或没有StartMotion方法"
+    def _custom_validate(self, params: Dict[str, Any]) -> bool:
+        """自定义验证逻辑"""
+        motion_name = params["motion_name"]
+        if motion_name not in self.parameters["motion_name"]["enum"]:
+            raise ValueError(
+                f"Invalid motion: {motion_name}. Available motions: {self.parameters['motion_name']['enum']}"
+            )
+        return True
+    
+    def execute(self, motion_name: str) -> str:
+        """执行动作
+        参数格式: 'group_index', 例如 'idle_0', 'Tapbody_1' 等
+        """
+        try:
+            group, index = motion_name.split('_')
+            index = int(index)
             
-#             # 解析参数
-#             parts = motion_param.split(',')
-#             if len(parts) != 2:
-#                 return "错误：参数格式应为 '动作组,索引'，如 'idle,0'"
+            # 验证动作组和索引是否有效
+            if group not in self.motion_groups:
+                return f"Invalid motion group: {group}"
+            if index >= len(self.motion_groups[group]):
+                return f"Invalid motion index {index} for group {group}"
             
-#             motion_group = parts[0].strip()
-#             try:
-#                 index = int(parts[1].strip())
-#             except ValueError:
-#                 return "错误：索引必须是数字"
+            # 发送动作信号
+            live2dsignal.motion_requested.emit(group, index, 3)
             
-#             # 检查动作组是否可用
-#             if motion_group not in self.available_motions:
-#                 available = ', '.join(self.available_motions.keys())
-#                 return f"错误：动作组 '{motion_group}' 不可用。可用动作组：{available}"
+            # 返回执行结果描述
+            description = self.parameters["motion_name"]["descriptions"][motion_name]
+            return f"Motion executed: {group} {index} - {description}"
             
-#             # 检查索引是否有效
-#             motion_descriptions = self.available_motions[motion_group]
-#             if index < 0 or index >= len(motion_descriptions):
-#                 return f"错误：索引 {index} 超出范围。动作组 '{motion_group}' 有 {len(motion_descriptions)} 个动作 (索引 0-{len(motion_descriptions)-1})"
-            
-#             self.body.StartMotion(motion_group, index)
-#             description = motion_descriptions[index]
-#             logging.info(f"开始动作: {motion_group}[{index}] - {description}")
-#             return f"成功开始动作：{motion_group}[{index}] - {description}"
-            
-#         except Exception as e:
-#             error_msg = f"开始动作失败: {e}"
-#             logging.error(error_msg)
-#             return error_msg
-
-
-# ============ 主智能体类 ============
+        except ValueError:
+            return f"Invalid motion format: {motion_name}. Expected format: 'group_index'"
+        except Exception as e:
+            return f"Error executing motion: {str(e)}"
 
 class AIFE:
     """AI虚拟伙伴智能体"""
 
-    def __init__(self, agent_config=config.agent, body=None, stream_chat_callback=None):
+    def __init__(self, agent_config=config.agent, stream_chat_callback=None):
         # 基础组件
         self.config = agent_config
-        self.llm = self._initialize_llm(config.llm.platform, config.llm.llm_config)
-        self.body = body
+        self.llm = self._initialize_llm(self.config.llm.platform, self.config.llm.llm_config)
         self.stream_chat_callback = stream_chat_callback
         self.short_term_memory = ChatMessageHistory()
+        self.short_term_memory.clear()
+        self.system_prompt = str(self.config.prompt)
+        self.short_term_memory.add_message(SystemMessage(content=self.system_prompt))
         
-        # # LangChain工具
-        # self.set_expression_tool = SetExpressionTool(body=body)
-        # self.start_motion_tool = StartMotionTool(body=body)
-        
-        # self.tools = [
-        #     self.set_expression_tool,
-        #     self.start_motion_tool
-        # ]
-        
-        # # 初始化Agent
+        # 初始化智能体（延迟初始化，在第一次调用agent_chat时进行）
         # self._init_agent()
-        
-        # 系统提示词
-        self.system_prompt = self.config.agent.prompt
-    
-#     def update_body_reference(self, body):
-#         """更新body引用"""
-#         self.body = body
-#         if hasattr(self, 'set_expression_tool'):
-#             self.set_expression_tool.body = body
-#         if hasattr(self, 'start_motion_tool'):
-#             self.start_motion_tool.body = body
-#         logging.info("已更新工具的body引用")
+
     
     def _initialize_llm(self, platform: str, llm_config: Dict[str, Any]):
         """初始化语言模型"""
@@ -199,139 +182,147 @@ class AIFE:
             return ChatAnthropic(**llm_config)
         else:
             raise ValueError(f"Unsupported platform: {platform}")
-    
-#     def _init_agent(self):
-#         """初始化LangChain Agent"""
-#         from langchain import hub
+
+    def _init_agent(self):
+        """初始化智能体"""
+        # 初始化Action实例
+        self.set_expression_action = SetExpression()
+        self.start_motion_action = StartMotion()
         
-#         try:
-#             # 使用ReAct提示模板
-#             prompt_template = """你是一个AI助手，可以使用工具来控制Live2D角色的表情和动作。
+        # 创建langchain工具
+        self.tools = [
+            Tool(
+                name=self.set_expression_action.name,
+                description=self.set_expression_action.description,
+                func=self._execute_set_expression
+            ),
+            Tool(
+                name=self.start_motion_action.name,
+                description=self.start_motion_action.description,
+                func=self._execute_start_motion
+            )
+        ]
+        
+        # 格式化可用的表情和动作信息
+        expressions = list(self.set_expression_action.parameters["expression"]["enum"])
+        motions_info = []
+        for motion_name, desc in self.start_motion_action.parameters["motion_name"]["descriptions"].items():
+            motions_info.append(f"{motion_name}: {desc}")
+        
+        # 创建适合create_react_agent的提示模板
+        template = f"""{self.system_prompt}
 
-# 你有以下工具可用：
-# {tools}
+You can use the following tools to control the Live2D character:
+1. set_expression: Set facial expression, parameter is expression (name of expression)
+2. start_motion: Play motion, parameter is motion_name (format: group_index, e.g., idle_0)
 
-# 使用以下格式：
+Available expressions: {", ".join(expressions)}
+Available motions: {"; ".join(motions_info)}
 
-# Question: 你需要回答的问题
-# Thought: 你应该思考该做什么
-# Action: 要采取的行动，应该是 [{tool_names}] 中的一个
-# Action Input: 行动的输入
-# Observation: 行动的结果
-# ... (这个思考/行动/行动输入/观察过程可以重复N次)
-# Thought: 我现在知道最终答案了
-# Final Answer: 对原始输入问题的最终答案
+When the user wants you to express emotions or perform actions, please use the appropriate tool(Every tool can only be used once).
 
-# 开始！
+TOOLS:
+------
 
-# Question: {input}
-# Thought: {agent_scratchpad}"""
+You have access to the following tools:
 
-#             from langchain.prompts import PromptTemplate
-#             prompt = PromptTemplate.from_template(prompt_template)
+{{tools}}
+
+To use a tool, please use the following format:
+
+```
+Thought: Do I need to use a tool? Yes
+Action: the action to take, should be one of [{{tool_names}}]
+Action Input: the input to the action
+Observation: the result of the action
+```
+
+When you have a response to say to the Human, or if you do not need to use a tool, you MUST use the format:
+
+```
+Thought: Do I need to use a tool? No
+Final Answer: [your response here]
+```
+
+Begin!
+
+{{chat_history}}
+Question: {{input}}
+Thought: {{agent_scratchpad}}"""
+
+        # 创建PromptTemplate
+        self.agent_prompt = PromptTemplate.from_template(template)
+        
+        # 创建智能体
+        self.agent = create_react_agent(self.llm, self.tools, self.agent_prompt)
+        self.agent_executor = AgentExecutor(
+            agent=self.agent,
+            tools=self.tools,
+            verbose=True,
+            handle_parsing_errors=True,
+            max_iterations=3
+        )
+
+    def _execute_set_expression(self, expression: str) -> str:
+        """执行设置表情的工具函数"""
+        try:
+            self.set_expression_action.validate_parameters({"expression": expression})
+            return self.set_expression_action.execute(expression=expression)
+        except Exception as e:
+            return f"设置表情失败: {str(e)}"
+    
+    def _execute_start_motion(self, motion_name: str) -> str:
+        """执行开始动作的工具函数"""
+        try:
+            self.start_motion_action.validate_parameters({"motion_name": motion_name})
+            return self.start_motion_action.execute(motion_name=motion_name)
+        except Exception as e:
+            return f"执行动作失败: {str(e)}"
+
+    def agent_chat(self, user_input: str) -> Generator[str, None, None]:
+        """智能体聊天对话生成器"""
+        try:
+            # 初始化智能体（如果还没有初始化）
+            if not hasattr(self, 'agent_executor'):
+                self._init_agent()
             
-#             self.agent = create_react_agent(
-#                 llm=self.llm,
-#                 tools=self.tools,
-#                 prompt=prompt
-#             )
-#             self.agent_executor = AgentExecutor(
-#                 agent=self.agent,
-#                 tools=self.tools,
-#                 verbose=True,
-#                 max_iterations=5,
-#                 early_stopping_method="generate",
-#                 handle_parsing_errors=True
-#             )
-#             logging.info("Agent初始化成功")
-#         except Exception as e:
-#             logging.warning(f"无法创建Agent: {e}")
-#             self.agent = None
-#             self.agent_executor = None
-
-#     def agent_chat(self, user_input: str) -> Generator[str, None, None]:
-#         """能够规划执行动作，返回迭代消息"""
-#         try:
-#             if not self.agent_executor:
-#                 yield "错误：Agent未正确初始化"
-#                 return
+            # 添加用户消息到短期记忆
+            self.short_term_memory.add_user_message(HumanMessage(content=user_input))
             
-#             # 添加到短期记忆
-#             self.short_term_memory.add_user_message(HumanMessage(content=user_input))
+            # 准备智能体输入
+            agent_input = {
+                "input": user_input,
+                "chat_history": self.short_term_memory.messages
+            }
             
-#             # 构建增强的系统提示词，包含工具使用指导
-#             enhanced_system_prompt = f"""{self.system_prompt}
-
-# ## 工具使用指导
-
-# 你可以使用以下工具来控制Live2D角色：
-
-# 1. **set_expression**: 设置表情
-#    - 可用表情：happy, angry, sad, shock, shy, neutral
-#    - 使用方法：根据对话情绪选择合适的表情
-#    - 例：当用户夸奖时使用 'happy'，当被批评时使用 'sad'
-
-# 2. **start_motion**: 开始动作
-#    - 可用动作组：idle, Tapbody
-#    - 使用方法：动作组,索引 如 'idle,0' 或 'Tapbody,1'
-#    - idle动作适合日常对话，Tapbody动作适合互动场景
-
-# ## 使用原则：
-# - 根据对话内容和情绪自然地使用表情和动作
-# - 优先使用表情，动作作为补充
-# - 保持角色的一致性和自然性
-# - 在回复开始时就设置合适的表情或动作
-# """
-
-#             # 执行Agent
-#             result = self.agent_executor.invoke({
-#                 "input": user_input,
-#                 "system_prompt": enhanced_system_prompt
-#             })
+            # 执行智能体
+            result = self.agent_executor.invoke(agent_input)
             
-#             # 流式返回结果
-#             if isinstance(result, dict) and "output" in result:
-#                 response = result["output"]
-#                 # 添加AI回复到记忆
-#                 self.short_term_memory.add_ai_message(AIMessage(content=response))
+            # 获取最终输出
+            final_output = result.get("output", "Sorry, I cannot process this request.")
+            
+            
+            # 逐字符输出以模拟流式效果
+            for char in final_output:
+                            # 流式输出结果
+                if self.stream_chat_callback:
+                    self.stream_chat_callback(char)
+                yield char
+                time.sleep(0.001)  # 小延迟以模拟打字效果
                 
-#                 # 分块返回响应
-#                 words = response.split()
-#                 current_chunk = ""
-#                 for word in words:
-#                     current_chunk += word + " "
-#                     if len(current_chunk) >= 10:  # 每10个字符返回一次
-#                         if self.stream_chat_callback:
-#                             self.stream_chat_callback(current_chunk)
-#                         yield current_chunk
-#                         current_chunk = ""
-                
-#                 # 返回剩余内容
-#                 if current_chunk:
-#                     if self.stream_chat_callback:
-#                         self.stream_chat_callback(current_chunk)
-#                     yield current_chunk
-#             else:
-#                 error_msg = "Agent执行失败"
-#                 logging.error(f"{error_msg}: {result}")
-#                 yield error_msg
-                
-#         except Exception as e:
-#             error_msg = f"Agent对话处理失败: {str(e)}"
-#             logging.error(error_msg)
-#             yield error_msg
+        except Exception as e:
+            error_msg = f"智能体对话处理失败: {str(e)}"
+            logging.error(error_msg)
+            yield error_msg
+
     def common_chat(self, user_input: str) -> Generator[str, None, None]:
         """流式聊天对话生成器"""
         try:
             # 添加到短期记忆
             self.short_term_memory.add_user_message(HumanMessage(content=user_input))
-            
-            messages = [
-                SystemMessage(content=self.system_prompt),
-                *self.short_term_memory.messages
-            ]
-        
-            for chunk in self.llm.stream(messages):
+            print(self.short_term_memory.messages)
+
+            for chunk in self.llm.stream(self.short_term_memory.messages):
                 if isinstance(chunk, AIMessageChunk):
                     if chunk.content:
                         if self.stream_chat_callback:
@@ -342,71 +333,11 @@ class AIFE:
             error_msg = f"对话处理失败: {str(e)}"
             logging.error(error_msg)
             yield error_msg
-    
-    # # ============ 便捷方法 ============
-    
-    # def set_expression(self, expression: str) -> bool:
-    #     """便捷方法：直接设置表情"""
-    #     try:
-    #         result = self.set_expression_tool._run(expression)
-    #         return not result.startswith("错误")
-    #     except Exception as e:
-    #         logging.error(f"设置表情失败: {e}")
-    #         return False
-    
-    # def start_motion(self, motion_group: str, index: int) -> bool:
-    #     """便捷方法：直接开始动作"""
-    #     try:
-    #         motion_param = f"{motion_group},{index}"
-    #         result = self.start_motion_tool._run(motion_param)
-    #         return not result.startswith("错误")
-    #     except Exception as e:
-    #         logging.error(f"开始动作失败: {e}")
-    #         return False
-    
-    # def get_available_expressions(self) -> Dict[str, List[str]]:
-    #     """获取可用表情列表"""
-    #     return dict(self.set_expression_tool.available_expressions)
-    
-    # def get_available_motions(self) -> Dict[str, List[str]]:
-    #     """获取可用动作列表"""
-    #     return dict(self.start_motion_tool.available_motions)
 
-
-    # # ============ 主动对话系统 ============
-    
-    # def initiate_conversation(self) -> str:
-    #     """主动发起对话"""
-    #     try:
-    #         greetings = [
-    #             "你好！我是Neuro-sama，今天想聊什么呢？",
-    #             "嗨！有什么有趣的事情要分享吗？",
-    #             "Hello there! 准备好和我聊天了吗？",
-    #             "哟！又见面了，今天过得怎么样？"
-    #         ]
-    #         import random
-    #         greeting = random.choice(greetings)
-            
-    #         # 设置一个友好的表情
-    #         if self.body and hasattr(self.body, 'SetExpression'):
-    #             try:
-    #                 self.body.SetExpression("F01")  # 设置开心表情
-    #                 logging.info("主动对话时设置了开心表情")
-    #             except Exception as e:
-    #                 logging.warning(f"设置表情失败: {e}")
-            
-    #         return greeting
-    #     except Exception as e:
-    #         logging.error(f"主动对话生成失败: {e}")
-    #         return "Hello! 很高兴见到你！"
-
-    
-    
     # ============ 系统状态查询 ============
     
     def get_status_summary(self) -> Dict[str, Any]:
         """获取状态摘要"""
         return {
         }
-        
-        
+

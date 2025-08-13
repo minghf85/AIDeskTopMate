@@ -90,7 +90,7 @@ class TransparentLive2dWindow(QOpenGLWidget):
 
     def _init_window(self):
         screen = QGuiApplication.primaryScreen().geometry()
-        self.screen_width = int(screen.width()/4) # 设置窗口宽度为屏幕宽度的四分之一
+        self.screen_width = int(screen.width()/3.5) # 设置窗口宽度为屏幕宽度的3.5分之一，防止全屏问题
         self.screen_height = screen.height() # 设置窗口高度为屏幕高度
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint |
                             Qt.WindowType.WindowStaysOnTopHint |
@@ -163,7 +163,7 @@ class TransparentLive2dWindow(QOpenGLWidget):
             return
         try:
             if index == -1:
-                self.model.StartRandomMotion(group, priority)
+                self.model.StartRandomMotion()
             else:
                 self.model.StartMotion(group, index, priority)
         except Exception as e:
@@ -653,7 +653,7 @@ class TransparentLive2dWindow(QOpenGLWidget):
         if event.key() == Qt.Key.Key_Escape:
             self.close()
         elif event.key() == Qt.Key.Key_Space:
-            self.start_motion_slot("TapBody", -1)
+            self.start_motion_slot("", -1)
         elif event.key() == Qt.Key.Key_R:
             self.set_scale_slot(1.0)
         elif event.key() == Qt.Key.Key_T:
