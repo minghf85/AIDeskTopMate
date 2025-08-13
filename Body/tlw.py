@@ -90,8 +90,8 @@ class TransparentLive2dWindow(QOpenGLWidget):
 
     def _init_window(self):
         screen = QGuiApplication.primaryScreen().geometry()
-        self.screen_width = screen.width()
-        self.screen_height = screen.height()
+        self.screen_width = int(screen.width()/4) # 设置窗口宽度为屏幕宽度的四分之一
+        self.screen_height = screen.height() # 设置窗口高度为屏幕高度
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint |
                             Qt.WindowType.WindowStaysOnTopHint |
                             Qt.WindowType.Tool)

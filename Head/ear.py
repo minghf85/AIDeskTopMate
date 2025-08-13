@@ -187,7 +187,7 @@ class ASR(QThread):
                 rate=self.sample_rate,
                 input=True,
                 frames_per_buffer=self.chunk_size,
-                stream_callback=self.audio_callback,
+                stream_callback=self.audio_callback
             )
             
             logger.info(f"音频流已启动 - 采样率: {self.sample_rate}, 通道: {self.channels}, 块大小: {self.chunk_size}")

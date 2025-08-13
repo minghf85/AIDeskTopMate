@@ -1,16 +1,18 @@
 live2d-py
-pyqt6
+pyqt6==6.8.0
 langchain
 langchain-community
 langchain-openai
 langchain-ollama
+langchain_anthropic
+pydantic
+pydantic_settings
 openai
 chroma-db
 faiss-cpu
 pydantic
 python-dotenv
 llama-cpp-python
-gpt4all
 toml
 pyaudio
 # 测试客户端依赖
@@ -26,7 +28,8 @@ funasr
 soundfile
 modelscope
 loguru
-RealtimeTTS
+RealtimeTTS[azure,edge,kokoro]
 # 新增的依赖
 dotmap
 dataclasses-json
+pywin32
