@@ -267,6 +267,20 @@ class ASRImproved(QThread):
         finally:
             self.cleanup()
 
+    def stop_stream(self):
+        """停止音频流"""
+        logger.info("正在闭麦")
+        if self.audio_stream:
+            self.audio_stream.stop_stream()
+            self.audio_stream.close()
+            self.audio_stream = None
+
+    def resume_stream(self):
+        """恢复音频流"""
+        logger.info("正在开启麦克风")
+        if self.audio_stream is None:
+            self.setup_audio_stream()
+
     def stop(self):
         """停止识别"""
         logger.info("正在停止 ASR...")

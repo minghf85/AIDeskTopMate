@@ -13,8 +13,30 @@ import toml
 from loguru import logger
 from PyQt6.QtGui import QKeyEvent
 import time
+import threading
 
 config = DotMap(toml.load("config.toml"))
+
+class TerminalInputThread(QThread):
+    """后台线程监听终端输入"""
+    def __init__(self, brain):
+        super().__init__()
+        self.brain = brain
+        self.running = True
+
+    def run(self):
+        while self.running:
+            try:
+                text = input("请输入文本（按I键切换回语音输入）：")
+                if text.strip() and self.running:  # 检查是否仍在运行
+                    self.brain.send_text_to_ai(text)
+            except EOFError:
+                break
+
+    def stop(self):
+        self.running = False
+        # 发送一个换行以解除input阻塞
+        print("\n")
 
 class Brain(QObject):
     """统筹管理所有的功能模块，在各个线程模块之间传递信息"""
@@ -25,6 +47,8 @@ class Brain(QObject):
         self.ear = None
         self.mouth = None
         self.body = None
+        self.text_ok_len = config.general.text_ok_len
+        self.last_text = ""
         self.current_response = ""  # 当前累积的响应文本
         self.sync_subtitle = config.tts.sync_subtitle
         self.interrupt_mode = config.asr.interrupt_mode
@@ -34,6 +58,8 @@ class Brain(QObject):
         self.pending_transcription = None  # 等待处理的转录文本
         self.ear_enabled = True
         self.mouth_enabled = True
+        self.input_mode = "voice"  # "voice" 或 "text"
+        self.terminal_input_thread = None
         
         # 字幕同步相关（仅在启用同步时初始化）
         if self.sync_subtitle:
@@ -42,30 +68,12 @@ class Brain(QObject):
         
         self.wakeup()
         
-        # 注册信号处理器
-        signal.signal(signal.SIGINT, lambda s, f: self.signal_handler(s, f))
-
         self.received_first_chunk = False
         # 添加延迟计算相关的时间戳
         self.speech_detect_time = None  # 检测到说话的时间
         self.transcription_complete_time = None  # 转录完成的时间
         self.aife_response_time = None  # AIFE响应的时间
         self.audio_start_time = None  # 音频开始播放的时间
-
-    def signal_handler(self, signum, frame):
-        """处理Ctrl+C信号"""
-        print("\nReceived Ctrl+C, shutting down...")
-        try:
-            # 先调用 sleep() 清理资源
-            self.sleep()
-            # 然后退出应用
-            if hasattr(self, 'app'):
-                self.app.quit()
-        except Exception as e:
-            logger.error(f"退出时发生错误: {e}")
-        finally:
-            # 确保进程退出
-            sys.exit(0)
 
     def wakeup(self):
         """唤醒大脑，从头往下激活"""
@@ -118,7 +126,8 @@ class Brain(QObject):
 
     def handle_transcription(self, text: str):
         """处理ASR识别结果"""
-        if len(text) > 5:  # 只处理非空文本和非单个或多个标点符号
+        self.last_text = text
+        if len(text) > self.text_ok_len:  # 只处理>self.text_ok_len
             try:
                 # 记录转录完成的时间
                 self.transcription_complete_time = time.time()
@@ -208,16 +217,11 @@ class Brain(QObject):
                 # 记录发送给AIFE的时间
                 send_to_aife_time = time.time()
                 
-                # 计算并记录从转录完成到发送给AIFE的延迟
-                if self.transcription_complete_time:
-                    processing_delay = self.transcription_complete_time - self.speech_detect_time
-                    logger.info(f"检测到说话->转录完成/发送给AIFE延迟: {processing_delay:.3f}秒")
-                
                 if self.sync_subtitle:
                     self.subtitle_sync.start_audio_playback()
                 
                 logger.info(f"开始处理: {text}")
-                ai_response_iterator = self.agent.agent_chat(text)
+                ai_response_iterator = self.agent.common_chat(text)
                 
                 # 计算并记录AIFE响应延迟
                 if self.aife_response_time:
@@ -255,7 +259,7 @@ class Brain(QObject):
         mode 2: 等待说话人说完后打断并开始新对话
         """
         self.speech_detect_time = time.time()
-        if self.interrupt_mode == 1:
+        if self.interrupt_mode == 1 and len(self.last_text) > self.text_ok_len:
             # 模式1：听到声音就立即打断
             # 记录检测到说话的时间
             logger.info("检测到说话")
@@ -341,6 +345,10 @@ class Brain(QObject):
         self.mouth = None
         self.body = None
         self.interrupt_thread = None
+        # 停止终端输入线程
+        if self.terminal_input_thread:
+            self.terminal_input_thread.stop()
+            self.terminal_input_thread = None
         
         logger.info("大脑已休眠")
 
@@ -357,26 +365,62 @@ class Brain(QObject):
                 elif key == Qt.Key.Key_L:  # Qt.Key_L
                     self.toggle_mouth()
                     return True
+                
+                # I键切换输入方式，闭麦切换为终端文本输入，开麦切换为语音输入
+                elif key == Qt.Key.Key_I:  # Qt.Key_I
+                    self.toggle_input()
+                    return True
         return False
+
+    def toggle_input(self, force_voice=False):
+        """切换输入方式，闭麦切换为终端文本输入，开麦切换为语音输入"""
+        if force_voice or self.input_mode == "text":
+            # 切换为语音输入
+            self.input_mode = "voice"
+            if self.terminal_input_thread:
+                self.terminal_input_thread.stop()
+                self.terminal_input_thread = None
+            if not self.ear_enabled:
+                self.toggle_ear()  # 开麦
+            if self.window.msgbox:
+                self.window.msgbox.show_text("已切换为语音输入（开麦）")
+            logger.info("切换为语音输入")
+        else:
+            # 切换为文本输入
+            self.input_mode = "text"
+            if self.ear_enabled:
+                self.toggle_ear()  # 闭麦
+            if self.window.msgbox:
+                self.window.msgbox.show_text("已切换为终端文本输入（闭麦）")
+            logger.info("切换为终端文本输入")
+            # 启动终端输入线程
+            if self.terminal_input_thread:
+                self.terminal_input_thread.stop()
+                self.terminal_input_thread = None
+            self.terminal_input_thread = TerminalInputThread(self)
+            self.terminal_input_thread.start()
 
     def toggle_ear(self):
         """切换ear开启/关闭"""
         if self.ear_enabled:
             if self.ear:
-                self.ear.stop()
-                logger.info("ASR已关闭")
-                if self.window.msgbox:
-                    self.window.msgbox.show_text("语音识别已关闭")
+                try:
+                    self.ear.stop_stream()
+                    logger.info("闭麦")
+                    if self.window.msgbox:
+                        self.window.msgbox.show_text("已闭麦")
+                except Exception as e:
+                    logger.error(f"闭麦失败: {e}")
             self.ear_enabled = False
         else:
             if self.ear:
                 try:
-                    self.ear.start()
-                    logger.info("ASR已开启")
+                    self.ear.resume_stream()
+                    logger.info("开麦")
                     if self.window.msgbox:
-                        self.window.msgbox.show_text("语音识别已开启")
+                        self.window.msgbox.show_text("已开麦")
                 except Exception as e:
-                    logger.error(f"启动ASR失败: {e}")
+                    logger.error(f"开麦失败: {e}")
             self.ear_enabled = True
 
     def toggle_mouth(self):
