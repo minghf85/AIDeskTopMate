@@ -61,10 +61,8 @@ class Brain(QObject):
         self.input_mode = "voice"  # "voice" 或 "text"
         self.terminal_input_thread = None
         
-        # 字幕同步相关（仅在启用同步时初始化）
-        if self.sync_subtitle:
-            self.subtitle_sync = SubtitleSync()
-            self.subtitle_sync.show_character.connect(self._show_character_delayed)
+        # 字幕同步相关（将在activate_body中初始化，确保在主线程中）
+        self.subtitle_sync = None
         
         self.wakeup()
         
@@ -93,19 +91,26 @@ class Brain(QObject):
             
         if config.tts.mode == "GSV":
             self.mouth = TTS_GSV()
+            # 后面再实现
         elif config.tts.mode == "realtime":
             # 根据同步设置决定回调函数
             if self.sync_subtitle:
                 self.mouth = TTS_realtime(
                     on_word=self.show_word, 
                     on_character=self.show_character,
-                    on_audio_stream_start=self._on_audio_stream_start
+                    on_audio_stream_start=self._on_audio_stream_start,
+                    on_audio_stream_stop=self._on_audio_stream_stop,
+                    on_text_stream_stop=self._on_text_stream_stop,
+                    on_text_stream_start=self._on_text_stream_start
                 )
             else:
                 self.mouth = TTS_realtime(
                     on_word=None, 
                     on_character=self.direct_show_character,
-                    on_audio_stream_start=self._on_audio_stream_start
+                    on_audio_stream_start=self._on_audio_stream_start,
+                    on_audio_stream_stop=self._on_audio_stream_stop,
+                    on_text_stream_stop=self._on_text_stream_stop,
+                    on_text_stream_start=self._on_text_stream_start
                 )
         self.body = self.activate_body()
         # 安装事件过滤器以捕获键盘事件
@@ -122,7 +127,29 @@ class Brain(QObject):
         self.window.msgbox.show()
         self.window._load_model(config.live2d.model_path)
         self.window.msgbox.show_text("大脑已唤醒，系统运行中...")
+        
+        # 在主线程中初始化字幕同步
+        if self.sync_subtitle:
+            self.subtitle_sync = SubtitleSync()
+            self.subtitle_sync.show_character.connect(self._show_character_delayed)
+        
         return self.window.model
+
+    def _add_interrupted_response_to_memory(self):
+        """统一处理被打断的响应内容，添加到AI记忆
+        
+        此方法统一处理所有被打断的情况，避免重复代码：
+        - 模式1：听到声音立即打断
+        - 模式2：说话结束后打断
+        - 程序退出时的清理
+        """
+        if self.mouth and hasattr(self.mouth, 'stream'):
+            interrupted_text = self.mouth.stream.text()
+            if interrupted_text.strip():  # 只有当有实际内容时才添加
+                interrupted_response = f"{interrupted_text}|Be Interrupted|"
+                if self.agent:
+                    self.agent.short_term_memory.add_ai_message(AIMessage(content=interrupted_response))
+                    logger.info(f"添加被打断的响应到记忆: {interrupted_response}")
 
     def handle_transcription(self, text: str):
         """处理ASR识别结果"""
@@ -136,10 +163,11 @@ class Brain(QObject):
                 if self.speech_detect_time:
                     transcription_delay = self.transcription_complete_time - self.speech_detect_time
                     logger.info(f"语音转录延迟: {transcription_delay:.3f}秒")
-                
-                if self.interrupt_mode == 2:
+
+                if self.interrupt_mode == 2 and self.mouth.stream.stream_running:
                     # 模式2：说话结束后打断当前响应并开始新对话
                     self.pending_transcription = text
+                    self._add_interrupted_response_to_memory()
                     self._start_interrupt_thread(mode=2)
                     return
 
@@ -158,10 +186,27 @@ class Brain(QObject):
                 if self.window.msgbox:
                     self.window.msgbox.show_text(f"AI处理错误: {str(e)}")
 
+    def _on_text_stream_start(self):
+        """处理文本流开始事件"""
+        self.received_first_chunk_time = time.time()
+
+    def _on_text_stream_stop(self):
+        """处理文本流停止事件
+        
+        统一处理正常完成的响应，确保所有完整的响应都被正确保存到AI记忆中
+        """
+        # 正常完成的响应添加到记忆中
+        if self.current_response and self.agent:
+            self.agent.short_term_memory.add_ai_message(AIMessage(content=self.current_response))
+            logger.info(f"添加完整响应到记忆: {self.current_response}")
+        
+        self.current_response = ""
+        self.received_all_chunks_time = time.time()
+
     def on_stream_chat_callback(self, text: str):
         """处理流式聊天返回的文本"""
         if not self.received_first_chunk:
-                self.aife_response_time = time.time()
+            self.aife_response_time = time.time()
         self.received_first_chunk = True
         # 累积响应文本
         self.current_response += text
@@ -173,19 +218,20 @@ class Brain(QObject):
 
     def show_character(self, character: str):
         """处理TTS返回的字符信息（包含标点符号）- 仅在同步模式下使用"""
-        if self.sync_subtitle:
+        if self.sync_subtitle and self.subtitle_sync:
             # 将字符添加到字幕同步器
             self.subtitle_sync.add_character(character)
 
     def show_word(self, timing_info):
         """处理TTS返回的单词时间信息 - 仅在同步模式下使用"""
-        if self.sync_subtitle:
+        if self.sync_subtitle and self.subtitle_sync:
             # 将时间信息添加到字幕同步器
             self.subtitle_sync.add_word_timing(timing_info)
     
     def _show_character_delayed(self, character: str):
         """实际显示字符的方法 - 仅在同步模式下使用"""
         if self.window.msgbox:
+            logger.debug(f"显示字符: '{character}'")
             self.text_signals.update_text.emit(character)
 
     def _start_interrupt_thread(self, mode):
@@ -193,14 +239,6 @@ class Brain(QObject):
         # 如果已有打断线程在运行，先停止它
         if self.interrupt_thread and self.interrupt_thread.isRunning():
             self.interrupt_thread.stop_thread()
-        
-        # 在打断前，将当前未完成的响应添加到记忆中
-        if self.current_response:
-            interrupted_response = f"{self.current_response}|Be Interrupted|"
-            if self.agent:
-                self.agent.short_term_memory.add_ai_message(AIMessage(content=interrupted_response))
-                logger.info(f"添加被打断的响应到记忆: {interrupted_response}")
-            self.current_response = ""  # 重置当前响应
         
         # 创建新的打断线程
         self.interrupt_thread = Interrupt(self.mouth, mode)
@@ -211,13 +249,14 @@ class Brain(QObject):
         """启动AI响应处理"""
         try:
             if self.agent:
-                # 重置当前响应文本
+                # 重置当前响应文本和相关标志
                 self.current_response = ""
+                self.received_first_chunk = False
                 
                 # 记录发送给AIFE的时间
                 send_to_aife_time = time.time()
                 
-                if self.sync_subtitle:
+                if self.sync_subtitle and self.subtitle_sync:
                     self.subtitle_sync.start_audio_playback()
                 
                 logger.info(f"开始处理: {text}")
@@ -240,12 +279,13 @@ class Brain(QObject):
                             full_response += content
                             self.window.msgbox.update_text(content)
                     
-                    self.mouth.stream.feed(full_response)
-                    
-                    # 添加到记忆
-                    if self.agent:
+                    # 非流式情况下直接添加到记忆
+                    if self.agent and full_response:
                         self.agent.short_term_memory.add_ai_message(AIMessage(content=full_response))
-                        self.current_response = ""  # 重置当前响应
+                        logger.info(f"添加非流式响应到记忆: {full_response}")
+                    
+                    if hasattr(self.mouth, 'stream'):
+                        self.mouth.stream.feed(full_response)
                         
         except Exception as e:
             logger.error(f"启动AI响应时出错: {e}")
@@ -259,10 +299,10 @@ class Brain(QObject):
         mode 2: 等待说话人说完后打断并开始新对话
         """
         self.speech_detect_time = time.time()
-        if self.interrupt_mode == 1 and len(self.last_text) > self.text_ok_len:
+        if self.interrupt_mode == 1 and self.mouth.stream.stream_running:
             # 模式1：听到声音就立即打断
-            # 记录检测到说话的时间
             logger.info("检测到说话")
+            self._add_interrupted_response_to_memory()
             self._start_interrupt_thread(mode=1)
         # 模式0和2在这里不做任何处理
 
@@ -270,8 +310,11 @@ class Brain(QObject):
         """打断完成后的回调"""
         logger.info("打断操作完成")
         
+        # 重置当前响应（因为已经被打断并保存到记忆中）
+        self.current_response = ""
+        
         # 仅在同步模式下停止字幕同步
-        if self.sync_subtitle:
+        if self.sync_subtitle and self.subtitle_sync:
             self.subtitle_sync.stop_audio_playback()
         
         # 如果是模式2且有待处理的转录文本，立即开始新对话
@@ -299,23 +342,20 @@ class Brain(QObject):
     
     def send_text_to_ai(self, text: str):
         """手动发送文本给AI（用于调试或手动输入）"""
-        if text.strip():
-            self.handle_transcription(text)
+        # 模拟语音输入的时间戳设置，确保字幕同步正常工作
+        self.speech_detect_time = time.time()
+        self.handle_transcription(text)
 
     def sleep(self):
         """让大脑进入休眠状态"""
         logger.info("大脑进入休眠状态...")
         
-        # 如果有未处理的响应，添加到记忆
-        if self.current_response:
-            interrupted_response = f"{self.current_response}|Be Interrupted|"
-            if self.agent:
-                self.agent.short_term_memory.add_ai_message(AIMessage(content=interrupted_response))
-                logger.info(f"添加被打断的响应到记忆: {interrupted_response}")
-            self.current_response = ""
+        # 如果当前有TTS在运行，先处理被打断的响应
+        if hasattr(self.mouth, 'stream') and self.mouth.stream and self.mouth.stream.stream_running:
+            self._add_interrupted_response_to_memory()
         
         # 仅在同步模式下停止字幕同步
-        if self.sync_subtitle:
+        if self.sync_subtitle and self.subtitle_sync:
             self.subtitle_sync.stop_audio_playback()
         
         # 停止打断线程
@@ -458,6 +498,9 @@ class Brain(QObject):
         self.transcription_complete_time = None
         self.aife_response_time = None
         self.audio_start_time = None
+
+    def _on_audio_stream_stop(self):
+        pass
 
 if __name__ == "__main__":
     brain = Brain()

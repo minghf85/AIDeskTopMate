@@ -1,7 +1,7 @@
 
 import threading
 from collections import deque
-from PyQt6.QtCore import QThread, pyqtSignal, QObject,QTimer
+from PyQt6.QtCore import QThread, pyqtSignal, QObject, QTimer, QMetaObject, Qt
 import time
 from loguru import logger
 class TextSignals(QObject):
@@ -36,13 +36,15 @@ class SubtitleSync(QObject):
             self.character_index = 0
             self.processed_chars.clear()
             if not self.subtitle_timer.isActive():
-                self.subtitle_timer.start()
+                # 使用 QMetaObject.invokeMethod 确保在正确的线程中启动定时器
+                QMetaObject.invokeMethod(self.subtitle_timer, "start", Qt.ConnectionType.QueuedConnection)
             logger.debug("音频播放开始，字幕同步启动")
     
     def stop_audio_playback(self):
         """停止音频播放"""
         with self.lock:
-            self.subtitle_timer.stop()
+            # 使用 QMetaObject.invokeMethod 确保在正确的线程中停止定时器
+            QMetaObject.invokeMethod(self.subtitle_timer, "stop", Qt.ConnectionType.QueuedConnection)
             self.character_buffer.clear()
             self.word_timings.clear()
             self.current_text = ""
@@ -153,7 +155,7 @@ class SubtitleSync(QObject):
                     break
 
 class Interrupt(QThread):
-    """处理打断逻辑的独立线程"""
+    """处理打断逻辑的独立线程 - 简化版本"""
     interrupt_completed = pyqtSignal()
     
     def __init__(self, mouth, mode):
@@ -165,24 +167,22 @@ class Interrupt(QThread):
     def run(self):
         """在独立线程中执行打断操作"""
         try:
-            if self.mode == 1:
-                # 模式1：听到声音就立即打断
-                if self.mouth and hasattr(self.mouth, 'stream'):
-                    self.mouth.stream.stop()
-                    logger.info("打断TTS stream完成")
-            elif self.mode == 2:
-                # 模式2：打断当前响应
-                if self.mouth and hasattr(self.mouth, 'stream'):
-                    self.mouth.stream.stop()
-                    logger.info("打断TTS stream完成")
+            # 无论哪种模式，都是停止TTS流
+            if self.mouth and hasattr(self.mouth, 'stream') and self.mouth.stream.stream_running:
+                self.mouth.stream.stop()
+                logger.info(f"模式{self.mode}打断: TTS流已停止")
             
+            # 发送完成信号
             self.interrupt_completed.emit()
             
         except Exception as e:
             logger.error(f"打断处理出错: {e}")
+            # 即使出错也要发送完成信号，避免挂起
+            self.interrupt_completed.emit()
     
     def stop_thread(self):
         """停止线程"""
         self.should_stop = True
-        self.quit()
-        self.wait()
+        if self.isRunning():
+            self.quit()
+            self.wait(1000)  # 最多等待1秒

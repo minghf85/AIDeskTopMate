@@ -33,11 +33,16 @@ class TTS_GSV():
     pass
 
 class TTS_realtime():
-    def __init__(self, on_word=None, on_character=None, on_audio_stream_start=None):
+    def __init__(self, on_word=None, on_character=None, on_audio_stream_start=None, on_text_stream_stop=None, on_text_stream_start=None, on_audio_stream_stop=None):
         super().__init__()
         self.on_word = on_word
         self.on_character = on_character
         self.on_audio_stream_start = on_audio_stream_start
+        self.on_audio_stream_stop = on_audio_stream_stop
+        self.on_text_stream_stop = on_text_stream_stop
+        self.on_text_stream_start = on_text_stream_start
+
+
         if config.tts.settings.engine == "azure":
             from RealtimeTTS import AzureEngine
             self.engine = AzureEngine(azure_api_key, azure_region)
@@ -57,9 +62,13 @@ class TTS_realtime():
 
         self.stream = TextToAudioStream(
             self.engine,
+            
             on_audio_stream_start=self.on_audio_stream_start if self.on_audio_stream_start else lambda x: None,
+            on_audio_stream_stop=self.on_audio_stream_stop if self.on_audio_stream_stop else lambda x: None,
             on_word=self.on_word if self.on_word else lambda x: None,
-            on_character=self.on_character if self.on_character else lambda x: None
+            on_character=self.on_character if self.on_character else lambda x: None,
+            on_text_stream_stop=self.on_text_stream_stop if self.on_text_stream_stop else lambda x: None,
+            on_text_stream_start=self.on_text_stream_start if self.on_text_stream_start else lambda x: None
             )
         self.latency = 0
 

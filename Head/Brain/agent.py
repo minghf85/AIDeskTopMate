@@ -320,7 +320,6 @@ Thought: {{agent_scratchpad}}"""
         try:
             # 添加到短期记忆
             self.short_term_memory.add_user_message(HumanMessage(content=user_input))
-            print(self.short_term_memory.messages)
 
             for chunk in self.llm.stream(self.short_term_memory.messages):
                 if isinstance(chunk, AIMessageChunk):

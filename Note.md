@@ -33,6 +33,7 @@ Azure 语音服务
 
 
 ```
+python Head/stt_server.py
 python -m Head.Brain.brain
 ```
 
