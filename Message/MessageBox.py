@@ -4,15 +4,22 @@ from dotenv import load_dotenv
 import os
 import re
 import threading
+from loguru import logger
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QLabel, QApplication
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject, QUrl
 from PyQt6.QtGui import QPixmap, QMovie
+from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
 load_dotenv()
 
+class MessageSignals(QObject):
+    """自定义信号类，用于消息框与其他组件之间的通信"""
+    text2show = pyqtSignal(str)
+    emoji_path = pyqtSignal(str)
+    audio_path = pyqtSignal(str)
 
 # 透明消息显示窗口
 class MessageBox(QWidget):
-    def __init__(self):
+    def __init__(self, signals=None):
         super().__init__()
         # 设置窗口标志：无边框、置顶、工具窗口（不在任务栏显示）
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | 
@@ -58,6 +65,150 @@ class MessageBox(QWidget):
         # 背景透明度设置 (0.0-1.0)
         self.background_opacity = 0.5
         self.update_background_style()
+        
+        # 添加音频播放器 - 改进初始化方式
+        self.audio_output = QAudioOutput()
+        self.media_player = QMediaPlayer()
+        self.media_player.setAudioOutput(self.audio_output)
+        
+        # 设置默认音量
+        self.audio_output.setVolume(0.8)
+        
+        # 连接播放器状态信号，用于错误处理和状态管理
+        self.media_player.errorOccurred.connect(self.handle_media_error)
+        self.media_player.playbackStateChanged.connect(self.handle_playback_state_changed)
+        self.media_player.mediaStatusChanged.connect(self.handle_media_status_changed)
+        
+        # 连接信号（如果提供了signals对象）
+        if signals:
+            self.connect_signals(signals)
+    
+    def connect_signals(self, signals):
+        """连接外部信号"""
+        signals.text2show.connect(self.handle_text_signal)
+        signals.emoji_path.connect(self.handle_emoji_signal)
+        signals.audio_path.connect(self.handle_audio_signal)
+    
+    def handle_text_signal(self, text):
+        """处理文本显示信号"""
+        self.show_text(text, stream=False)
+    
+    def handle_emoji_signal(self, emoji_path):
+        """处理emoji显示信号"""
+        self.show_emoji(emoji_path)
+    
+    def handle_audio_signal(self, audio_path):
+        """处理音频播放信号"""
+        self.play_audio(audio_path)
+    
+    def show_emoji(self, emoji_path):
+        """显示emoji（作为图像处理）"""
+        if os.path.exists(emoji_path):
+            # 检查文件扩展名判断是静态图还是动图
+            _, ext = os.path.splitext(emoji_path.lower())
+            if ext in ['.gif']:
+                self.show_gif(emoji_path)
+            else:
+                self.show_image(emoji_path)
+        else:
+            self.show_text(f"Emoji文件不存在: {emoji_path}")
+    
+    def handle_media_error(self, error):
+        """处理媒体播放错误"""
+        logger.error(f"媒体播放错误: {error}")
+        error_string = self.media_player.errorString()
+        logger.error(f"错误详情: {error_string}")
+    
+    def handle_playback_state_changed(self, state):
+        """处理播放状态变化"""
+        state_names = {
+            QMediaPlayer.PlaybackState.StoppedState: "已停止",
+            QMediaPlayer.PlaybackState.PlayingState: "正在播放",
+            QMediaPlayer.PlaybackState.PausedState: "已暂停"
+        }
+        logger.info(f"播放状态变为: {state_names.get(state, '未知状态')}")
+    
+    def handle_media_status_changed(self, status):
+        """处理媒体状态变化"""
+        status_names = {
+            QMediaPlayer.MediaStatus.NoMedia: "无媒体",
+            QMediaPlayer.MediaStatus.LoadingMedia: "正在加载",
+            QMediaPlayer.MediaStatus.LoadedMedia: "已加载",
+            QMediaPlayer.MediaStatus.BufferingMedia: "正在缓冲",
+            QMediaPlayer.MediaStatus.BufferedMedia: "已缓冲",
+            QMediaPlayer.MediaStatus.EndOfMedia: "播放结束",
+            QMediaPlayer.MediaStatus.InvalidMedia: "无效媒体"
+        }
+        logger.info(f"媒体状态变为: {status_names.get(status, '未知状态')}")
+        
+        if status == QMediaPlayer.MediaStatus.LoadedMedia:
+            # 媒体加载完成，开始播放
+            logger.info("媒体加载完成，开始播放")
+            self.media_player.play()
+        elif status == QMediaPlayer.MediaStatus.InvalidMedia:
+            logger.error("无效的媒体文件")
+            self.show_text("音频文件格式不支持或已损坏")
+    
+    def reset_media_player(self):
+        """重置媒体播放器状态"""
+        try:
+            # 停止播放
+            if self.media_player.playbackState() != QMediaPlayer.PlaybackState.StoppedState:
+                self.media_player.stop()
+            
+            # 清除媒体源
+            self.media_player.setSource(QUrl())
+            
+        except Exception as e:
+            logger.error(f"重置媒体播放器时出错: {e}")
+    
+    def play_audio(self, audio_path):
+        """播放音频文件"""
+        if not os.path.exists(audio_path):
+            self.show_text(f"音频文件不存在: {audio_path}")
+            return
+            
+        try:
+            logger.info(f"尝试播放音频: {audio_path}")
+            
+            # 先停止当前播放
+            self.media_player.stop()
+            
+            # 设置音频文件路径
+            audio_url = QUrl.fromLocalFile(os.path.abspath(audio_path))
+            logger.info(f"音频URL: {audio_url.toString()}")
+            
+            # 设置媒体源
+            self.media_player.setSource(audio_url)
+            
+            # 确保音频输出设备可用
+            self.audio_output.setVolume(0.8)
+            logger.info(f"音频输出音量: {self.audio_output.volume()}")
+            
+            # 显示正在播放的提示
+            filename = os.path.basename(audio_path)
+            self.show_text(f"🔊 正在播放: {filename}")
+            
+            # 如果媒体已经加载，直接播放；否则等待加载完成后播放
+            if self.media_player.mediaStatus() == QMediaPlayer.MediaStatus.LoadedMedia:
+                self.media_player.play()
+            
+        except Exception as e:
+            logger.error(f"播放音频时出错: {e}")
+            self.show_text(f"音频播放错误: {str(e)}")
+    
+    def _do_play_audio(self, audio_path):
+        """实际执行音频播放 - 保留此方法以防其他地方调用"""
+        self.play_audio(audio_path)
+    
+    def stop_audio(self):
+        """停止音频播放"""
+        try:
+            if self.media_player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
+                self.media_player.stop()
+                logger.info("音频播放已停止")
+        except Exception as e:
+            logger.error(f"停止音频时出错: {e}")
 
     def update_background_style(self):
         """更新背景样式"""
@@ -236,11 +387,17 @@ class MessageBox(QWidget):
             self.current_movie.stop()
             self.current_movie = None
         self.stream_timer.stop()
+        # 停止音频播放（但不显示文本，避免干扰）
+        try:
+            if self.media_player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
+                self.media_player.stop()
+        except Exception as e:
+            logger.error(f"停止当前媒体时出错: {e}")
         self.content_label.clear()
         # 重置标签大小限制
         self.content_label.setMinimumSize(0, 0)
         self.content_label.setMaximumSize(16777215, 16777215)
-    
+
     def adjust_window_size(self):
         """调整窗口大小以适应内容"""
         # 清除之前的尺寸限制
@@ -385,15 +542,23 @@ if __name__ == "__main__":
 )
     app = QApplication(sys.argv)
     
+    # 创建信号对象
+    signals = MessageSignals()
+    
     # 创建消息框实例
-    message_box = MessageBox()
+    message_box = MessageBox(signals)
     message_box.show()
     
-    for chunk in llm.stream([HumanMessage("你好，请介绍一下你自己，并且详细说明你的功能和特点。")]):
-        if chunk.content:
-            # 清除之前的内容并显示累积的文本
-            message_box.update_text(chunk.content)
-            # 处理Qt事件循环以更新UI
-            app.processEvents()
+    # 测试信号
+    signals.text2show.emit("Hello World!")
+    # signals.emoji_path.emit("Assets/捏脸.gif")
+    signals.audio_path.emit("Assets/nice.mp3")
+
+    # for chunk in llm.stream([HumanMessage("你好，请介绍一下你自己，并且详细说明你的功能和特点。")]):
+    #     if chunk.content:
+    #         # 清除之前的内容并显示累积的文本
+    #         message_box.update_text(chunk.content)
+    #         # 处理Qt事件循环以更新UI
+    #         app.processEvents()
     
     sys.exit(app.exec())

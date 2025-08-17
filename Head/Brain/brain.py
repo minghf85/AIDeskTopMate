@@ -7,36 +7,18 @@ from langchain_core.messages import HumanMessage, AIMessage, AIMessageChunk
 from Head.Brain.agent import AIFE
 from Head.ear_improved import ASRImproved as ASR
 from Head.mouth import TTS_GSV,TTS_realtime
-from Head.Brain.sync import SubtitleSync,TextSignals,Interrupt
+from Head.Brain.sync import SubtitleSync,TextSignals,Interrupt,TerminalInputThread
 from dotmap import DotMap
 import toml
 from loguru import logger
 from PyQt6.QtGui import QKeyEvent
 import time
 import threading
+import asyncio
+from aiostream import stream
 
 config = DotMap(toml.load("config.toml"))
 
-class TerminalInputThread(QThread):
-    """后台线程监听终端输入"""
-    def __init__(self, brain):
-        super().__init__()
-        self.brain = brain
-        self.running = True
-
-    def run(self):
-        while self.running:
-            try:
-                text = input("请输入文本（按I键切换回语音输入）：")
-                if text.strip() and self.running:  # 检查是否仍在运行
-                    self.brain.send_text_to_ai(text)
-            except EOFError:
-                break
-
-    def stop(self):
-        self.running = False
-        # 发送一个换行以解除input阻塞
-        print("\n")
 
 class Brain(QObject):
     """统筹管理所有的功能模块，在各个线程模块之间传递信息"""
@@ -60,6 +42,7 @@ class Brain(QObject):
         self.mouth_enabled = True
         self.input_mode = "voice"  # "voice" 或 "text"
         self.terminal_input_thread = None
+        self.use_agent = config.agent.get("enable_agent", True)  # 控制是否使用Agent功能
         
         # 字幕同步相关（将在activate_body中初始化，确保在主线程中）
         self.subtitle_sync = None
@@ -117,7 +100,14 @@ class Brain(QObject):
         self.window.installEventFilter(self)
         # 连接文本更新信号
         self.text_signals.update_text.connect(self.window.msgbox.update_text)
-        self.agent = AIFE(agent_config=config.agent, stream_chat_callback=self.on_stream_chat_callback)
+        
+        # 初始化Agent，传递信号对象
+        self.agent = AIFE(
+            agent_config=config.agent, 
+            stream_chat_callback=self.on_stream_chat_callback,
+            live2d_signals=self.signals,
+            message_signals=self.window.msgbox_signals  # 传递MessageSignals对象
+        )
 
     def activate_body(self):
         self.signals = Live2DSignals()
@@ -205,6 +195,7 @@ class Brain(QObject):
 
     def on_stream_chat_callback(self, text: str):
         """处理流式聊天返回的文本"""
+        logger.info(f"流式聊天返回: {text}")
         if not self.received_first_chunk:
             self.aife_response_time = time.time()
         self.received_first_chunk = True
@@ -231,7 +222,6 @@ class Brain(QObject):
     def _show_character_delayed(self, character: str):
         """实际显示字符的方法 - 仅在同步模式下使用"""
         if self.window.msgbox:
-            logger.debug(f"显示字符: '{character}'")
             self.text_signals.update_text.emit(character)
 
     def _start_interrupt_thread(self, mode):
@@ -260,7 +250,15 @@ class Brain(QObject):
                     self.subtitle_sync.start_audio_playback()
                 
                 logger.info(f"开始处理: {text}")
-                ai_response_iterator = self.agent.common_chat(text)
+                
+                # 根据配置选择使用 Agent 或简单聊天
+                if self.use_agent:
+                    ai_response_async_gen = self.agent.agent_chat(text)
+                else:
+                    ai_response_async_gen = self.agent.common_chat(text)
+                
+                # 使用aiostream将AsyncGenerator转换为Generator
+                ai_response_iterator = self._async_to_sync_generator(ai_response_async_gen)
                 
                 # 计算并记录AIFE响应延迟
                 if self.aife_response_time:
@@ -291,6 +289,80 @@ class Brain(QObject):
             logger.error(f"启动AI响应时出错: {e}")
             if self.window.msgbox:
                 self.window.msgbox.show_text(f"AI处理错误: {str(e)}")
+
+    def _async_to_sync_generator(self, async_gen):
+        """将AsyncGenerator转换为Generator"""
+        try:
+            # 获取或创建事件循环
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_closed():
+                    raise RuntimeError("Event loop is closed")
+            except RuntimeError:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+            
+            # 如果循环正在运行，创建新线程来运行异步生成器
+            if loop.is_running():
+                import threading
+                import queue
+                
+                result_queue = queue.Queue()
+                exception_queue = queue.Queue()
+                
+                def run_async_gen():
+                    try:
+                        new_loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(new_loop)
+                        
+                        async def collect_results():
+                            try:
+                                async for item in async_gen:
+                                    result_queue.put(('item', item))
+                                result_queue.put(('done', None))
+                            except Exception as e:
+                                exception_queue.put(e)
+                                result_queue.put(('error', e))
+                        
+                        new_loop.run_until_complete(collect_results())
+                        new_loop.close()
+                    except Exception as e:
+                        exception_queue.put(e)
+                        result_queue.put(('error', e))
+                
+                thread = threading.Thread(target=run_async_gen)
+                thread.start()
+                
+                while True:
+                    try:
+                        msg_type, value = result_queue.get(timeout=1.0)
+                        if msg_type == 'item':
+                            yield value
+                        elif msg_type == 'done':
+                            break
+                        elif msg_type == 'error':
+                            if not exception_queue.empty():
+                                raise exception_queue.get()
+                            break
+                    except queue.Empty:
+                        continue
+                
+                thread.join()
+            else:
+                # 如果循环没有运行，直接运行
+                async def collect_all():
+                    results = []
+                    async for item in async_gen:
+                        results.append(item)
+                    return results
+                
+                results = loop.run_until_complete(collect_all())
+                for item in results:
+                    yield item
+                    
+        except Exception as e:
+            logger.error(f"转换AsyncGenerator时出错: {e}")
+            yield f"生成器转换错误: {str(e)}"
 
     def handle_interrupt(self):
         """打断正在说话
@@ -410,7 +482,20 @@ class Brain(QObject):
                 elif key == Qt.Key.Key_I:  # Qt.Key_I
                     self.toggle_input()
                     return True
+                
+                # A键切换Agent模式
+                elif key == Qt.Key.Key_A:  # Qt.Key_A
+                    self.toggle_agent_mode()
+                    return True
         return False
+
+    def toggle_agent_mode(self):
+        """切换Agent智能体模式"""
+        self.use_agent = not self.use_agent
+        mode_text = "智能体模式" if self.use_agent else "简单聊天模式"
+        if self.window.msgbox:
+            self.window.msgbox.show_text(f"已切换为{mode_text}")
+        logger.info(f"切换为{mode_text}")
 
     def toggle_input(self, force_voice=False):
         """切换输入方式，闭麦切换为终端文本输入，开麦切换为语音输入"""

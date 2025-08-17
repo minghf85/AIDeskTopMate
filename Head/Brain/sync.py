@@ -186,3 +186,24 @@ class Interrupt(QThread):
         if self.isRunning():
             self.quit()
             self.wait(1000)  # 最多等待1秒
+
+class TerminalInputThread(QThread):
+    """后台线程监听终端输入"""
+    def __init__(self, brain):
+        super().__init__()
+        self.brain = brain
+        self.running = True
+
+    def run(self):
+        while self.running:
+            try:
+                text = input("请输入文本（按I键切换回语音输入）：")
+                if text.strip() and self.running:  # 检查是否仍在运行
+                    self.brain.send_text_to_ai(text)
+            except EOFError:
+                break
+
+    def stop(self):
+        self.running = False
+        # 发送一个换行以解除input阻塞
+        print("\n")

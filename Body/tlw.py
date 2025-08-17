@@ -9,7 +9,7 @@ from PyQt6.QtOpenGLWidgets import QOpenGLWidget
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtGui import QGuiApplication
 from Head.mouth import TTS_GSV, TTS_realtime
-from Message.MessageBox import MessageBox
+from Message.MessageBox import MessageBox, MessageSignals
 import win32gui
 import win32con
 import win32api
@@ -73,7 +73,11 @@ class TransparentLive2dWindow(QOpenGLWidget):
         self.state = Live2DState()
         self.mutex = QMutex()
         self.SetAndAdd =SetAndAddController()
-        self.msgbox = MessageBox()
+        
+        # 创建MessageSignals并初始化MessageBox
+        self.msgbox_signals = MessageSignals()
+        self.msgbox = MessageBox(self.msgbox_signals)
+        
         #self.wavHandler = WavHandler()
         self.mouth = mouth
         # 用于存储API查询结果
