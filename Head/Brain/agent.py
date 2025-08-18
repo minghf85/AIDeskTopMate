@@ -28,13 +28,19 @@ from langchain.schema import BaseMemory
 from langchain_openai import ChatOpenAI
 from langchain_ollama import ChatOllama
 from langchain_anthropic import ChatAnthropic
-from langchain.agents import Agent, AgentExecutor, Tool, create_react_agent
-from langchain.schema import AgentAction
+from langchain.agents import Agent, AgentExecutor, Tool, create_react_agent, BaseMultiActionAgent
+from langchain.schema import AgentAction, AgentFinish
 from langchain.tools import BaseTool
 from langchain_core.callbacks import BaseCallbackHandler, AsyncCallbackHandler
 from langchain_community.vectorstores import FAISS
 from langchain_openai import OpenAIEmbeddings
 from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain.agents.agent import RunnableMultiActionAgent
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.runnables import Runnable, RunnablePassthrough
+from langchain_core.messages import BaseMessage
+from langchain_core.agents import AgentAction as CoreAgentAction, AgentFinish as CoreAgentFinish
+import re
 
 
 live2dsignal = Live2DSignals()
@@ -65,7 +71,7 @@ class AIFE:
         self.tools = self._create_tools()
         
         # 创建agent
-        self.agent = self._create_agent()
+        self.agent = self._create_multi_action_agent()
         
         # 创建agent executor
         self.agent_executor = AgentExecutor(
@@ -73,8 +79,70 @@ class AIFE:
             tools=self.tools,
             verbose=True,
             handle_parsing_errors=True,
-            max_iterations=3
+            max_iterations=1,  # 减少迭代次数，因为使用多动作执行
+            return_intermediate_steps=True,  # 返回中间步骤便于调试
         )
+    
+    class MultiActionOutputParser:
+        """自定义多动作输出解析器，确保ShouldRespond工具最后执行"""
+        
+        def __init__(self, tools_list):
+            self.tool_names = [tool.name.lower() for tool in tools_list]
+        
+        def parse(self, text: str) -> List[AgentAction] | AgentFinish:
+            """解析LLM输出为多个动作"""
+            
+            # 检查是否包含结束标志
+            if "FINAL ANSWER:" in text.upper() or "最终答案:" in text:
+                return AgentFinish(
+                    return_values={"output": text.split(":")[-1].strip()},
+                    log=text
+                )
+            
+            actions = []
+            should_respond_action = None
+            
+            # 使用正则表达式匹配动作
+            action_pattern = r'Action:\s*(\w+)\s*Action Input:\s*([^\n]+)'
+            matches = re.findall(action_pattern, text, re.IGNORECASE)
+            
+            # 收集所有动作，将ShouldRespond放到最后
+            for tool_name, tool_input in matches:
+                tool_name_lower = tool_name.lower()
+                if tool_name_lower == 'shouldrespond':
+                    # 保存ShouldRespond动作，稍后添加到最后
+                    should_respond_action = AgentAction(
+                        tool="ShouldRespond",
+                        tool_input=tool_input.strip(),
+                        log=f"Action: ShouldRespond\nAction Input: {tool_input}"
+                    )
+                    continue
+                if tool_name_lower in self.tool_names:
+                    actions.append(AgentAction(
+                        tool=tool_name,
+                        tool_input=tool_input.strip(),
+                        log=f"Action: {tool_name}\nAction Input: {tool_input}"
+                    ))
+            
+            # 如果Agent输出了ShouldRespond，将其添加到最后
+            if should_respond_action:
+                actions.append(should_respond_action)
+            else:
+                # 如果Agent没有输出ShouldRespond，自动添加一个默认的
+                actions.append(AgentAction(
+                    tool="ShouldRespond",
+                    tool_input="true",
+                    log="自动添加的ShouldRespond: 默认需要回应"
+                ))
+            
+            logger.info(f"计划执行的动作序列: {[a.tool for a in actions]}")
+            return actions if actions else [
+                AgentAction(
+                    tool="ShouldRespond",
+                    tool_input="true",
+                    log="仅执行ShouldRespond步骤"
+                )
+            ]
     
     def _create_tools(self):
         """创建工具列表"""
@@ -128,24 +196,90 @@ class AIFE:
                 description=f"播放音效。可用音效: {', '.join(audio_list)}"
             ))
         
-        # 通用聊天工具（可选执行）
-        if "common_chat" in self.config.actions.enabled:
-            tools.append(Tool(
-                name="CommonChat",
-                func=lambda x: asyncio.run(self._common_chat(x)),
-                description="是否回应用户的工具。输入true表示需要回应用户，输入false表示不需要回应。格式: true 或 false"
-            ))
+
+        tools.append(Tool(
+            name="ShouldRespond",
+            func=lambda x: asyncio.run(self._should_respond(x)),
+            description="是否回应用户的工具。输入true表示需要回应用户，输入false表示不需要回应。格式: true 或 false"
+        ))
         
         return tools
     
+    def _create_multi_action_agent(self):
+        """创建多动作Runnable链"""
+        
+        # 创建prompt模板
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", """你是一个AI live2D数字人的决策大脑。你的人设是{persona}
+请根据用户请求分析并执行相应的多个动作。
+
+可用工具:
+{tools}
+
+执行规则:
+1. 分析用户需求，确定需要执行哪些动作（表情、动作、表情包、音效等）
+2. 一次性规划所有需要的动作，每个工具最多执行一次
+3. **必须**在最后输出ShouldRespond动作来判断是否需要语言回应：
+   - 如果用户的请求已经通过动作完全表达了（如纯粹的表情、动作请求），使用ShouldRespond false
+   - 如果需要语言回应或解释，使用ShouldRespond true
+4. 每个Action Input只能是简单参数，不包含多行文本
+
+执行流程示例:
+- 用户要求做一个开心的表情 → SetExpression 开心 → ShouldRespond false
+- 用户询问问题 → (可选的其他动作) → ShouldRespond true
+- 用户要求播放音效 → PlayAudio 音效名 → ShouldRespond false
+
+请按以下格式输出所有需要的动作:
+Action: 工具名称
+Action Input: 工具的输入参数
+
+可重复上述格式执行多个动作，但ShouldRespond必须是最后一个。"""),
+            ("human", "{input}"),
+            MessagesPlaceholder(variable_name="agent_scratchpad", optional=True)
+        ])
+        
+        # 创建输出解析器
+        output_parser = self.MultiActionOutputParser(self.tools)
+        
+        # 格式化函数
+        def format_scratchpad(intermediate_steps: List[Tuple[AgentAction, str]]) -> List[BaseMessage]:
+            """格式化中间步骤"""
+            if not intermediate_steps:
+                return []
+                
+            messages = []
+            results = []
+            for action, observation in intermediate_steps:
+                results.append(f"{action.tool}: {observation}")
+                messages.append(AIMessage(content="\n".join(results)))
+            return messages
+        
+        # 创建Runnable链
+        chain = (
+            RunnablePassthrough.assign(
+                agent_scratchpad=lambda x: format_scratchpad(x.get("intermediate_steps", []))
+            )
+            | prompt.partial(
+                persona=self.config.persona,
+                tools="\n".join([f"{tool.name}: {tool.description}" for tool in self.tools])
+            )
+            | self.llm
+            | (lambda x: output_parser.parse(x.content))
+        )
+        
+        # 创建RunnableMultiActionAgent
+        return RunnableMultiActionAgent(
+            runnable=chain,
+        )
+    
     def _create_agent(self):
-        """创建ReAct agent"""
+        """创建ReAct agent (已弃用，使用_create_multi_action_agent)"""
         # 准备工具信息
         tool_names = [tool.name for tool in self.tools]
         tool_descriptions = "\n".join([f"{tool.name}: {tool.description}" for tool in self.tools])
         
-        # 创建prompt模板
-        prompt_template = """你是一个AI live2D数字人。你的人设是{persona}
+        # 创建prompt模板 - 修改执行规则确保最后调用ShouldRespond
+        prompt_template = """你是一个AI live2D数字人的决策大脑。你的人设是{persona}
 请根据{user}请求执行相应的动作。
 
 你可以使用的工具:
@@ -153,11 +287,17 @@ class AIFE:
 
 执行规则:
 1. 首先分析用户需求，确定需要执行哪些动作（表情、动作、表情包、音效等）
-2. 执行相应的动作工具，每个工具最多执行一次
-3. 最后使用CommonChat工具决定是否需要语言回应用户：
-   - 如果用户的请求已经通过动作完全表达了（如纯粹的表情、动作请求），使用CommonChat false
-   - 如果需要语言回应或解释，使用CommonChat true
-4. 每个Action Input只能是简单参数，不包含多行文本
+2. 依次执行相应的动作工具，每个工具最多执行一次
+3. **必须**在所有动作执行完成后调用ShouldRespond工具作为最后一步：
+   - 如果用户的请求已经通过动作完全表达了（如纯粹的表情、动作请求），使用ShouldRespond false
+   - 如果需要语言回应或解释，使用ShouldRespond true
+4. ShouldRespond工具必须是最后执行的工具，不可省略
+5. 每个Action Input只能是简单参数，不包含多行文本
+
+执行流程示例:
+- 用户要求做一个开心的表情 → SetExpression开心 → ShouldRespond false
+- 用户询问问题 → (可选的其他动作) → ShouldRespond true
+- 用户要求播放音效 → PlayAudio音效名 → ShouldRespond false
 
 请严格按照以下格式执行:
 Action: 工具名称，必须是[{tool_names}]中的一个
@@ -298,20 +438,18 @@ Action Input: 工具的输入参数（只能是一个简单的单词或短语）
             logger.error(f"播放音效时出错: {e}")
             return f"✗ 音效播放失败"
 
-    async def _common_chat(self, should_respond: str) -> bool|str:
-        """CommonChat工具的包装函数，用于Agent调用"""
+    async def _should_respond(self, should_respond: str) -> str:
+        """ShouldRespond工具的包装函数，用于Agent调用"""
         # 解析布尔值输入
         should_respond_clean = should_respond.strip().lower()
         
         if should_respond_clean in ['true', '是', 'yes', '1']:
-            # 标记CommonChat已被调用且需要回应
-
-            return True
+            # 标记ShouldRespond已被调用且需要回应
+            return "✓ 需要语言回应"
         
         elif should_respond_clean in ['false', '否', 'no', '0']:
-            # 标记CommonChat已被调用但不需要回应
-
-            return False
+            # 标记ShouldRespond已被调用但不需要回应
+            return "✓ 不需要语言回应"
         
         else:
             return "✗ 无效的布尔值，请使用 true 或 false"
@@ -341,87 +479,75 @@ Action Input: 工具的输入参数（只能是一个简单的单词或短语）
 
 
     async def agent_chat(self, user_input: str) -> AsyncGenerator[str, None]:
-        """异步流式智能体聊天对话生成器 - 执行Agent工具调用并返回流式响应"""
+        """异步流式智能体聊天对话生成器 - 执行多动作Agent并返回流式响应"""
         try:
             # 记录当前用户输入并清理动作记录
             self.current_user_input = user_input
             self.executed_actions = []
-            common_chat_triggered = False  # 标记是否已触发CommonChat响应
-
-            # 执行Agent工具调用
+            common_chat_result = None  # 记录ShouldRespond的结果
+            
+            # 执行多动作Agent
             try:
-                # 执行agent进行工具调用和动作执行
-                async for event in self.agent_executor.astream_events(
-                    {"input": user_input},
-                    version="v1"
-                ):
-                    # 如果已经触发CommonChat响应，跳过后续事件
-                    if common_chat_triggered:
-                        continue
+                # 直接使用agent_executor的ainvoke方法执行多动作
+                result = await self.agent_executor.ainvoke({"input": user_input})
+                
+                # 显示执行结果
+                logger.info("📋 多动作执行详情:")
+                if 'intermediate_steps' in result:
+                    for action, observation in result['intermediate_steps']:
+                        logger.info(f"➤ {action.tool}:")
+                        logger.info(f"  输入: {action.tool_input}")
+                        logger.info(f"  结果: {observation}")
                         
-                    kind = event["event"]
-                    if kind == "on_chat_model_stream":
-                        content = event["data"]["chunk"].content
-                        if content:
-                            # Empty content in the context of OpenAI means
-                            # that the model is asking for a tool to be invoked.
-                            # So we only print non-empty content
-                            print(content, end="|")
-                    elif kind == "on_tool_start":
-                        print("--")
-                        print(
-                            f"Starting tool: {event['name']} with inputs: {event['data'].get('input')}"
-                        )
-                        self.executed_actions.append({
-                            "type": "ToolStart",
-                            "name": event['name'],
-                            "input": event['data'].get('input')
-                        })
-                    elif kind == "on_tool_end":
-                        print(f"Done tool: {event['name']}")
-                        print(f"Tool output was: {event['data'].get('output')}")
-                        print("--")
+                        # 记录执行的动作
                         self.executed_actions.append({
                             "type": "ToolEnd",
-                            "name": event['name'],
-                            "output": event['data'].get('output')
+                            "name": action.tool,
+                            "input": action.tool_input,
+                            "output": observation
                         })
                         
-                        # 检查是否是CommonChat工具且返回True
-                        if (event['name'] == "CommonChat" and 
-                            (event['data'].get('output') == True or event['data'].get('output') == "true")):
-                            
-                            common_chat_triggered = True  # 设置标记，防止重复处理
-                            
-                            # 构建包含执行动作的上下文
-                            logger.info(f"选择调用CommonChat，已执行动作: {self.executed_actions}")
-                            
-                            # 过滤executed_actions，只保留实际执行的动作
-                            filtered_actions = []
-                            for action in self.executed_actions:
-                                if action["type"] == "ToolEnd" and action["name"] != "CommonChat":
-                                    if action.get("output", "").startswith("✓"):
-                                        filtered_actions.append({
-                                            "name": action["name"],
-                                            "result": action["output"]
-                                        })
-                            
-                            context_input = f"用户请求: {user_input}\n已执行的动作: {filtered_actions}\n请对此做出自然的回应。"
+                        # 检查是否是ShouldRespond工具
+                        if action.tool == "ShouldRespond":
+                            if "✓ 需要语言回应" in observation:
+                                common_chat_result = True
+                            elif "✓ 不需要语言回应" in observation:
+                                common_chat_result = False
+                
+                # 检查ShouldRespond是否被执行
+                if common_chat_result is None:
+                    # 如果没有执行ShouldRespond，记录警告并默认需要回应
+                    logger.warning("Agent未执行ShouldRespond工具，默认需要语言回应")
+                    common_chat_result = True
+                
+                # 如果ShouldRespond返回True，执行语言回应
+                if common_chat_result:
+                    # 构建包含执行动作的上下文
+                    logger.info(f"ShouldRespond结果为True，已执行动作: {self.executed_actions}")
+                    
+                    # 过滤executed_actions，只保留实际执行的动作
+                    filtered_actions = []
+                    for action in self.executed_actions:
+                        if action["name"] != "ShouldRespond":
+                            if action.get("output", "").startswith("✓"):
+                                filtered_actions.append({
+                                    "name": action["name"],
+                                    "result": action["output"]
+                                })
+                    
+                    context_input = f"用户请求: {user_input}\n已执行的动作: {filtered_actions}\n请对此做出自然的回应。"
 
-                            # 创建临时消息进行流式生成
-                            temp_messages = self.short_term_memory.messages.copy()
-                            temp_messages.append(HumanMessage(content=context_input))
-                            
-                            # 使用包含动作描述的消息进行流式对话
-                            async for chunk in self.llm.astream(temp_messages):
-                                if isinstance(chunk, AIMessageChunk):
-                                    if chunk.content:
-                                        if self.stream_chat_callback:
-                                            await self._safe_call_callback(chunk.content)
-                                        yield str(chunk.content)
-                            
-                            # 处理完毕，直接返回
-                            return
+                    # 创建临时消息进行流式生成
+                    temp_messages = self.short_term_memory.messages.copy()
+                    temp_messages.append(HumanMessage(content=context_input))
+                    
+                    # 使用包含动作描述的消息进行流式对话
+                    async for chunk in self.llm.astream(temp_messages):
+                        if isinstance(chunk, AIMessageChunk):
+                            if chunk.content and isinstance(chunk.content, str):
+                                if self.stream_chat_callback:
+                                    await self._safe_call_callback(chunk.content)
+                                yield str(chunk.content)
 
             except Exception as e:
                 error_msg = f"Agent工具执行出错: {str(e)}"
@@ -441,7 +567,7 @@ Action Input: 工具的输入参数（只能是一个简单的单词或短语）
 
             async for chunk in self.llm.astream(self.short_term_memory.messages):
                 if isinstance(chunk, AIMessageChunk):
-                    if chunk.content:
+                    if chunk.content and isinstance(chunk.content, str):
                         if self.stream_chat_callback:
                             await self._safe_call_callback(chunk.content)
                         yield str(chunk.content)
@@ -463,18 +589,6 @@ Action Input: 工具的输入参数（只能是一个简单的单词或短语）
                     self.stream_chat_callback(content)
         except Exception as e:
             logger.error(f"调用stream_chat_callback时出错: {e}")
-
-    def sync_agent_chat(self, user_input: str):
-        loop = asyncio.get_event_loop()
-        a_iter = self.agent_chat(user_input)
-        s_iter = stream.list(a_iter)  # 异步转同步
-        return loop.run_until_complete(s_iter)
-
-    def sync_common_chat(self, user_input: str):
-        loop = asyncio.get_event_loop()
-        a_iter = self.common_chat(user_input)
-        s_iter = stream.list(a_iter)  # 异步转同步
-        return loop.run_until_complete(s_iter)
 
     # ============ 系统状态查询 ============
     
