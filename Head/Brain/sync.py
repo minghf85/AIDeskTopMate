@@ -168,7 +168,7 @@ class Interrupt(QThread):
         """在独立线程中执行打断操作"""
         try:
             # 无论哪种模式，都是停止TTS流
-            if self.mouth and hasattr(self.mouth, 'stream') and self.mouth.stream.stream_running:
+            if self.mouth and hasattr(self.mouth, 'stream') and self.mouth.stream.is_playing():
                 self.mouth.stream.stop()
                 logger.info(f"模式{self.mode}打断: TTS流已停止")
             

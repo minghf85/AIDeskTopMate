@@ -22,3 +22,5 @@ speaker
 config.toml
 
 .vscode/
+
+config.json

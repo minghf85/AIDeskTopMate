@@ -210,30 +210,7 @@ class AIFE:
         
         # 创建prompt模板
         prompt = ChatPromptTemplate.from_messages([
-            ("system", """你是一个AI live2D数字人的决策大脑。你的人设是{persona}
-请根据用户请求分析并执行相应的多个动作。
-
-可用工具:
-{tools}
-
-执行规则:
-1. 分析用户需求，确定需要执行哪些动作（表情、动作、表情包、音效等）
-2. 一次性规划所有需要的动作，每个工具最多执行一次
-3. **必须**在最后输出ShouldRespond动作来判断是否需要语言回应：
-   - 如果用户的请求已经通过动作完全表达了（如纯粹的表情、动作请求），使用ShouldRespond false
-   - 如果需要语言回应或解释，使用ShouldRespond true
-4. 每个Action Input只能是简单参数，不包含多行文本
-
-执行流程示例:
-- 用户要求做一个开心的表情 → SetExpression 开心 → ShouldRespond false
-- 用户询问问题 → (可选的其他动作) → ShouldRespond true
-- 用户要求播放音效 → PlayAudio 音效名 → ShouldRespond false
-
-请按以下格式输出所有需要的动作:
-Action: 工具名称
-Action Input: 工具的输入参数
-
-可重复上述格式执行多个动作，但ShouldRespond必须是最后一个。"""),
+            ("system", self.config.decision_prompt),
             ("human", "{input}"),
             MessagesPlaceholder(variable_name="agent_scratchpad", optional=True)
         ])
@@ -270,54 +247,6 @@ Action Input: 工具的输入参数
         # 创建RunnableMultiActionAgent
         return RunnableMultiActionAgent(
             runnable=chain,
-        )
-    
-    def _create_agent(self):
-        """创建ReAct agent (已弃用，使用_create_multi_action_agent)"""
-        # 准备工具信息
-        tool_names = [tool.name for tool in self.tools]
-        tool_descriptions = "\n".join([f"{tool.name}: {tool.description}" for tool in self.tools])
-        
-        # 创建prompt模板 - 修改执行规则确保最后调用ShouldRespond
-        prompt_template = """你是一个AI live2D数字人的决策大脑。你的人设是{persona}
-请根据{user}请求执行相应的动作。
-
-你可以使用的工具:
-{tools}
-
-执行规则:
-1. 首先分析用户需求，确定需要执行哪些动作（表情、动作、表情包、音效等）
-2. 依次执行相应的动作工具，每个工具最多执行一次
-3. **必须**在所有动作执行完成后调用ShouldRespond工具作为最后一步：
-   - 如果用户的请求已经通过动作完全表达了（如纯粹的表情、动作请求），使用ShouldRespond false
-   - 如果需要语言回应或解释，使用ShouldRespond true
-4. ShouldRespond工具必须是最后执行的工具，不可省略
-5. 每个Action Input只能是简单参数，不包含多行文本
-
-执行流程示例:
-- 用户要求做一个开心的表情 → SetExpression开心 → ShouldRespond false
-- 用户询问问题 → (可选的其他动作) → ShouldRespond true
-- 用户要求播放音效 → PlayAudio音效名 → ShouldRespond false
-
-请严格按照以下格式执行:
-Action: 工具名称，必须是[{tool_names}]中的一个
-Action Input: 工具的输入参数（只能是一个简单的单词或短语）
-
-用户输入: {input}
-{agent_scratchpad}"""
-        
-        prompt = PromptTemplate.from_template(prompt_template)
-        
-        # 创建agent
-        return create_react_agent(
-            self.llm,
-            self.tools,
-            prompt.partial(
-                persona=self.config.persona,
-                user=self.config.user,
-                tools=tool_descriptions,
-                tool_names=", ".join(tool_names)
-            )
         )
     
     def _get_available_emojis(self):
@@ -468,15 +397,25 @@ Action Input: 工具的输入参数（只能是一个简单的单词或短语）
     def _initialize_llm(self, platform: str, llm_config: Dict[str, Any]):
         """初始化语言模型"""
         if platform == "openai":
-            return ChatOpenAI(**llm_config)
+            llm =  ChatOpenAI(**llm_config)
         elif platform == "ollama":
-            return ChatOllama(**llm_config)
+            llm = ChatOllama(**llm_config)
         elif platform == "anthropic":
-            return ChatAnthropic(**llm_config)
+            llm = ChatAnthropic(**llm_config)
         else:
             raise ValueError(f"Unsupported platform: {platform}")
-
-
+        
+        # 测试连接
+        try:
+            test_response = llm.invoke("Hello!")
+            if test_response:
+                return llm
+            else:
+                logger.error(f"llm连接失败，请检查配置或代理")
+                return None
+        except:
+            logger.error(f"llm连接失败，请检查配置或代理")
+            return None
 
     async def agent_chat(self, user_input: str) -> AsyncGenerator[str, None]:
         """异步流式智能体聊天对话生成器 - 执行多动作Agent并返回流式响应"""

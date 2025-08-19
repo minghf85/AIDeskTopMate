@@ -3,16 +3,16 @@
 ## 修复的问题
 
 ### 1. 打断前未检查TTS流状态
-**问题**: 原来的`handle_interrupt`方法没有正确检查`self.mouth.stream.stream_running`状态就尝试打断。
+**问题**: 原来的`handle_interrupt`方法没有正确检查`self.mouth.stream.is_playing()`状态就尝试打断。
 
 **修复**: 
 ```python
 # 修复前
-if self.interrupt_mode == 1 and self.mouth.stream.stream_running:
+if self.interrupt_mode == 1 and self.mouth.stream.is_playing():
 
 # 修复后  
 if (self.mouth and hasattr(self.mouth, 'stream') and 
-    self.mouth.stream.stream_running):
+    self.mouth.stream.is_playing()):
 ```
 
 ### 2. 被打断的响应没有正确添加到AI记忆
@@ -41,7 +41,7 @@ class Interrupt(QThread):
         
     def run(self):
         # 检查TTS流状态后再执行打断
-        if self.mouth and hasattr(self.mouth, 'stream') and self.mouth.stream.stream_running:
+        if self.mouth and hasattr(self.mouth, 'stream') and self.mouth.stream.is_playing():
             self.mouth.stream.stop()
             # 传递被打断的响应内容
             self.interrupt_completed.emit(self.current_response)

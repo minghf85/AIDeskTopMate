@@ -154,7 +154,7 @@ class Brain(QObject):
                     transcription_delay = self.transcription_complete_time - self.speech_detect_time
                     logger.info(f"语音转录延迟: {transcription_delay:.3f}秒")
 
-                if self.interrupt_mode == 2 and self.mouth.stream.stream_running:
+                if self.interrupt_mode == 2 and self.mouth.stream.is_playing():
                     # 模式2：说话结束后打断当前响应并开始新对话
                     self.pending_transcription = text
                     self._add_interrupted_response_to_memory()
@@ -163,7 +163,7 @@ class Brain(QObject):
 
                 elif self.interrupt_mode == 0:
                     # 模式0：等待当前响应完成后再处理新对话
-                    if hasattr(self.mouth, 'stream') and self.mouth.stream.stream_running:
+                    if hasattr(self.mouth, 'stream') and self.mouth.stream.is_playing():
                         return  # 如果当前有响应在处理，直接返回
                 
                 # 处理新对话（适用于模式0的空闲状态和模式1）
@@ -371,7 +371,7 @@ class Brain(QObject):
         mode 2: 等待说话人说完后打断并开始新对话
         """
         self.speech_detect_time = time.time()
-        if self.interrupt_mode == 1 and self.mouth.stream.stream_running:
+        if self.interrupt_mode == 1 and self.mouth.stream.is_playing():
             # 模式1：听到声音就立即打断
             logger.info("检测到说话")
             self._add_interrupted_response_to_memory()
@@ -423,7 +423,7 @@ class Brain(QObject):
         logger.info("大脑进入休眠状态...")
         
         # 如果当前有TTS在运行，先处理被打断的响应
-        if hasattr(self.mouth, 'stream') and self.mouth.stream and self.mouth.stream.stream_running:
+        if hasattr(self.mouth, 'stream') and self.mouth.stream and self.mouth.stream.is_playing():
             self._add_interrupted_response_to_memory()
         
         # 仅在同步模式下停止字幕同步
