@@ -7,7 +7,7 @@ import threading
 from loguru import logger
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QLabel, QApplication
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject, QUrl
-from PyQt6.QtGui import QPixmap, QMovie
+from PyQt6.QtGui import QPixmap, QMovie, QFontDatabase
 from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
 load_dotenv()
 
@@ -63,7 +63,7 @@ class MessageBox(QWidget):
         self.current_movie = None
         
         # 背景透明度设置 (0.0-1.0)
-        self.background_opacity = 0.5
+        self.background_opacity = 0.2
         self.update_background_style()
         
         # 添加音频播放器 - 改进初始化方式
@@ -82,6 +82,28 @@ class MessageBox(QWidget):
         # 连接信号（如果提供了signals对象）
         if signals:
             self.connect_signals(signals)
+        
+        # 加载自定义字体
+        font_path = "fonts/MaokenAssortedSans.ttf"
+        if os.path.exists(font_path):
+            font_id = QFontDatabase.addApplicationFont(font_path)
+            if font_id != -1:
+                font_family = QFontDatabase.applicationFontFamilies(font_id)[0]
+                self.content_label.setStyleSheet(f"""
+                    QLabel {{
+                        color: skyblue;  /* 天蓝色 */
+                        font-size: 18pt;
+                        font-family: "{font_family}";
+                        background-color: rgba(0, 0, 0, {self.background_opacity});
+                        border-radius: 15px;
+                        padding: 15px;
+                        min-height: 50px;
+                    }}
+                """)
+            else:
+                logger.error(f"Failed to load font: {font_path}")
+        else:
+            logger.error(f"Font file not found: {font_path}")
     
     def connect_signals(self, signals):
         """连接外部信号"""
@@ -291,7 +313,7 @@ class MessageBox(QWidget):
                 self.content_label.setPixmap(scaled_pixmap)
                 self.content_label.setText("")  # 清除文本
                 # 调整标签大小以适应图像
-                self.content_label.setFixedSize(scaled_pixmap.size())
+                self.content_label.resize(scaled_pixmap.size())
                 self.adjust_window_size()
             else:
                 self.show_text(f"无法加载图像: {image_path}")
@@ -343,7 +365,7 @@ class MessageBox(QWidget):
                 self.content_label.setMovie(self.current_movie)
                 self.content_label.setText("")  # 清除文本
                 # 调整标签大小以适应GIF
-                self.content_label.setFixedSize(final_size)
+                self.content_label.resize(final_size)
                 self.current_movie.start()
                 self.adjust_window_size()
             else:
@@ -422,7 +444,7 @@ class MessageBox(QWidget):
             margin = 20  # 10px * 2 (左右边距)
             window_width = content_size.width() + margin
             window_height = content_size.height() + margin
-            self.setFixedSize(window_width, window_height)
+            self.resize(window_width, window_height)
                 
     def clear_content(self):
         """清除当前内容"""
@@ -550,15 +572,15 @@ if __name__ == "__main__":
     message_box.show()
     
     # 测试信号
-    signals.text2show.emit("Hello World!")
-    # signals.emoji_path.emit("Assets/捏脸.gif")
-    signals.audio_path.emit("Assets/nice.mp3")
+    signals.emoji_path.emit("Assets/捏脸.gif")
+    message_box.clear_content()
+    # signals.audio_path.emit("Assets/nice.mp3")
 
-    # for chunk in llm.stream([HumanMessage("你好，请介绍一下你自己，并且详细说明你的功能和特点。")]):
-    #     if chunk.content:
-    #         # 清除之前的内容并显示累积的文本
-    #         message_box.update_text(chunk.content)
-    #         # 处理Qt事件循环以更新UI
-    #         app.processEvents()
+    for chunk in llm.stream([HumanMessage("你好，请介绍一下你自己，并且说明你的功能和特点。")]):
+        if chunk.content:
+            # 清除之前的内容并显示累积的文本
+            message_box.update_text(chunk.content)
+            # 处理Qt事件循环以更新UI
+            app.processEvents()
     
     sys.exit(app.exec())
