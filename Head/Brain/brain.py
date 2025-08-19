@@ -7,7 +7,10 @@ from langchain_core.messages import HumanMessage, AIMessage, AIMessageChunk
 from Head.Brain.agent import AIFE
 from Head.ear_improved import ASRImproved as ASR
 from Head.mouth import TTS_GSV,TTS_realtime
-from Head.Brain.sync import SubtitleSync,TextSignals,Interrupt,TerminalInputThread
+from Head.Brain.async_sync import (
+    AsyncTextSignals, AsyncSubtitleSync, AsyncInterruptManager, 
+    AsyncTerminalInput, AsyncEventLoop
+)
 from dotmap import DotMap
 import toml
 from loguru import logger
@@ -24,7 +27,7 @@ class Brain(QObject):
     """统筹管理所有的功能模块，在各个线程模块之间传递信息"""
     def __init__(self):
         super().__init__()  # 调用 QObject 的初始化方法
-        self.text_signals = TextSignals()
+        self.text_signals = AsyncTextSignals()
         self.agent = None
         self.ear = None
         self.mouth = None
@@ -36,16 +39,17 @@ class Brain(QObject):
         self.interrupt_mode = config.asr.interrupt_mode
         self.end_punctuation = config.tts.end_punctuation  # 获取结束标点符号列表
         self.interrupted = False  # 新增打断标志
-        self.interrupt_thread = None  # 打断线程
         self.pending_transcription = None  # 等待处理的转录文本
         self.ear_enabled = True
         self.mouth_enabled = True
         self.input_mode = "voice"  # "voice" 或 "text"
-        self.terminal_input_thread = None
         self.use_agent = config.agent.get("enable_agent", True)  # 控制是否使用Agent功能
         
-        # 字幕同步相关（将在activate_body中初始化，确保在主线程中）
+        # 异步组件
+        self.async_loop = AsyncEventLoop()
         self.subtitle_sync = None
+        self.interrupt_manager = None
+        self.terminal_input = None
         
         self.wakeup()
         
@@ -118,10 +122,21 @@ class Brain(QObject):
         self.window._load_model(config.live2d.model_path)
         self.window.msgbox.show_text("大脑已唤醒，系统运行中...")
         
+        # 启动异步事件循环
+        self.async_loop.start_loop()
+        
         # 在主线程中初始化字幕同步
         if self.sync_subtitle:
-            self.subtitle_sync = SubtitleSync()
+            self.subtitle_sync = AsyncSubtitleSync()
             self.subtitle_sync.show_character.connect(self._show_character_delayed)
+        
+        # 初始化异步打断管理器
+        self.interrupt_manager = AsyncInterruptManager(self.mouth, self)
+        self.interrupt_manager.interrupt_completed.connect(self._on_interrupt_completed)
+        
+        # 初始化异步终端输入
+        self.terminal_input = AsyncTerminalInput()
+        self.terminal_input.text_received.connect(self.send_text_to_ai)
         
         return self.window.model
 
@@ -210,14 +225,14 @@ class Brain(QObject):
     def show_character(self, character: str):
         """处理TTS返回的字符信息（包含标点符号）- 仅在同步模式下使用"""
         if self.sync_subtitle and self.subtitle_sync:
-            # 将字符添加到字幕同步器
-            self.subtitle_sync.add_character(character)
+            # 将字符添加到字幕同步器（异步调用）
+            self.async_loop.run_coroutine(self.subtitle_sync.add_character(character))
 
     def show_word(self, timing_info):
         """处理TTS返回的单词时间信息 - 仅在同步模式下使用"""
         if self.sync_subtitle and self.subtitle_sync:
-            # 将时间信息添加到字幕同步器
-            self.subtitle_sync.add_word_timing(timing_info)
+            # 将时间信息添加到字幕同步器（异步调用）
+            self.async_loop.run_coroutine(self.subtitle_sync.add_word_timing(timing_info))
     
     def _show_character_delayed(self, character: str):
         """实际显示字符的方法 - 仅在同步模式下使用"""
@@ -225,15 +240,10 @@ class Brain(QObject):
             self.text_signals.update_text.emit(character)
 
     def _start_interrupt_thread(self, mode):
-        """启动打断线程"""
-        # 如果已有打断线程在运行，先停止它
-        if self.interrupt_thread and self.interrupt_thread.isRunning():
-            self.interrupt_thread.stop_thread()
-        
-        # 创建新的打断线程
-        self.interrupt_thread = Interrupt(self.mouth, mode)
-        self.interrupt_thread.interrupt_completed.connect(self._on_interrupt_completed)
-        self.interrupt_thread.start()
+        """启动打断操作（异步）"""
+        if self.interrupt_manager:
+            # 使用异步打断管理器
+            self.async_loop.run_coroutine(self.interrupt_manager.start_interrupt(mode))
 
     def _start_ai_response(self, text: str):
         """启动AI响应处理"""
@@ -246,8 +256,11 @@ class Brain(QObject):
                 # 记录发送给AIFE的时间
                 send_to_aife_time = time.time()
                 
+                # 确保字幕同步器能够正确启动（特别是在模式2打断后的情况）
                 if self.sync_subtitle and self.subtitle_sync:
-                    self.subtitle_sync.start_audio_playback()
+                    # 使用重启方法确保状态完全清理
+                    self.async_loop.run_coroutine(self.subtitle_sync.restart_audio_playback())
+                    logger.debug("字幕同步器已重新启动")
                 
                 logger.info(f"开始处理: {text}")
                 
@@ -385,16 +398,17 @@ class Brain(QObject):
         # 重置当前响应（因为已经被打断并保存到记忆中）
         self.current_response = ""
         
-        # 仅在同步模式下停止字幕同步
-        if self.sync_subtitle and self.subtitle_sync:
-            self.subtitle_sync.stop_audio_playback()
-        
         # 如果是模式2且有待处理的转录文本，立即开始新对话
         if self.interrupt_mode == 2 and self.pending_transcription:
             self.window.msgbox.clear_content()
             self.current_response = ""
+            logger.info(f"模式2打断后开始新对话: {self.pending_transcription}")
             self._start_ai_response(self.pending_transcription)
             self.pending_transcription = None
+        else:
+            # 只有在非模式2或没有待处理转录文本时才停止字幕同步
+            if self.sync_subtitle and self.subtitle_sync:
+                self.async_loop.run_coroutine(self.subtitle_sync.stop_audio_playback())
 
     def handle_asr_error(self, error: str):
         """处理ASR错误"""
@@ -428,12 +442,14 @@ class Brain(QObject):
         
         # 仅在同步模式下停止字幕同步
         if self.sync_subtitle and self.subtitle_sync:
-            self.subtitle_sync.stop_audio_playback()
+            self.async_loop.run_coroutine(self.subtitle_sync.stop_audio_playback())
         
-        # 停止打断线程
-        if self.interrupt_thread and self.interrupt_thread.isRunning():
-            self.interrupt_thread.stop_thread()
+        # 停止异步组件
+        if self.interrupt_manager:
+            self.interrupt_manager.stop_interrupt()
         
+        if self.terminal_input:
+            self.async_loop.run_coroutine(self.terminal_input.stop_input_monitoring())
         # 停止TTS流
         if self.mouth and hasattr(self.mouth, 'stream'):
             self.mouth.stream.stop()
@@ -458,9 +474,6 @@ class Brain(QObject):
         self.body = None
         self.interrupt_thread = None
         # 停止终端输入线程
-        if self.terminal_input_thread:
-            self.terminal_input_thread.stop()
-            self.terminal_input_thread = None
         
         logger.info("大脑已休眠")
 
@@ -502,9 +515,9 @@ class Brain(QObject):
         if force_voice or self.input_mode == "text":
             # 切换为语音输入
             self.input_mode = "voice"
-            if self.terminal_input_thread:
-                self.terminal_input_thread.stop()
-                self.terminal_input_thread = None
+            if self.terminal_input:
+                self.async_loop.run_coroutine(self.terminal_input.stop_input_monitoring())
+
             if not self.ear_enabled:
                 self.toggle_ear()  # 开麦
             if self.window.msgbox:
@@ -518,12 +531,9 @@ class Brain(QObject):
             if self.window.msgbox:
                 self.window.msgbox.show_text("已切换为终端文本输入（闭麦）")
             logger.info("切换为终端文本输入")
-            # 启动终端输入线程
-            if self.terminal_input_thread:
-                self.terminal_input_thread.stop()
-                self.terminal_input_thread = None
-            self.terminal_input_thread = TerminalInputThread(self)
-            self.terminal_input_thread.start()
+            # 启动异步终端输入监听
+            if self.terminal_input:
+                self.async_loop.run_coroutine(self.terminal_input.start_input_monitoring())
 
     def toggle_ear(self):
         """切换ear开启/关闭"""
