@@ -22,6 +22,31 @@ from aiostream import stream
 
 config = DotMap(toml.load("config.toml"))
 
+class AsyncGenBroadcaster:
+    def __init__(self, async_gen):
+        self.async_gen = async_gen
+        self.handlers = []
+
+    def add_handler(self, handler: callable):
+        """注册处理函数，需为异步函数"""
+        self.handlers.append(handler)
+
+    async def broadcast(self):
+        """启动广播"""
+        async for chunk in self.async_gen:
+            await asyncio.gather(*[handler(chunk) for handler in self.handlers])
+
+# 使用示例
+async def save_to_db(chunk):
+    print(f"DB保存: {chunk}")
+
+async def log_to_console(chunk):
+    print(f"日志输出: {chunk}")
+
+# broadcaster = AsyncGenBroadcaster(self.agent.common_chat("你好"))
+# broadcaster.add_handler(save_to_db)
+# broadcaster.add_handler(log_to_console)
+# await broadcaster.broadcast()  # 启动分发
 
 class Brain(QObject):
     """统筹管理所有的功能模块，在各个线程模块之间传递信息"""

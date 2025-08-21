@@ -14,6 +14,8 @@ import win32gui
 import win32con
 import win32api
 import live2d.v3 as live2d
+from live2d.utils.lipsync import WavHandler
+from loguru import logger
 from dotmap import DotMap
 import toml
 # 读取toml的live2d配置

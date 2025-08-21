@@ -33,3 +33,4 @@ RealtimeTTS[azure,edge,kokoro]
 dotmap
 dataclasses-json
 pywin32
+httpx
