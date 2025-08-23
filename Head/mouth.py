@@ -37,9 +37,8 @@ config_json = toml.load("config.toml")
 class TTS_GSV():
     """GPT-SoVITS TTS 引擎实现"""
     
-    def __init__(self, on_word=None, on_character=None, on_audio_stream_start=None, 
+    def __init__(self, on_character=None, on_audio_stream_start=None, 
                  on_text_stream_stop=None, on_text_stream_start=None, on_audio_stream_stop=None):
-        self.on_word = on_word
         self.on_character = on_character
         self.on_audio_stream_start = on_audio_stream_start
         self.on_audio_stream_stop = on_audio_stream_stop
@@ -55,7 +54,6 @@ class TTS_GSV():
         self.stream = GSVStream(
             on_audio_stream_start=self.on_audio_stream_start,
             on_audio_stream_stop=self.on_audio_stream_stop,
-            on_word=self.on_word,
             on_character=self.on_character,
             on_text_stream_start=self.on_text_stream_start,
             on_text_stream_stop=self.on_text_stream_stop
@@ -63,8 +61,7 @@ class TTS_GSV():
         
 
 class TTS_realtime():
-    def __init__(self, on_word=None, on_character=None, on_audio_stream_start=None, on_text_stream_stop=None, on_text_stream_start=None, on_audio_stream_stop=None):
-        self.on_word = on_word
+    def __init__(self, on_character=None, on_audio_stream_start=None, on_text_stream_stop=None, on_text_stream_start=None, on_audio_stream_stop=None):
         self.on_character = on_character
         self.on_audio_stream_start = on_audio_stream_start
         self.on_audio_stream_stop = on_audio_stream_stop
@@ -93,7 +90,6 @@ class TTS_realtime():
             self.engine,
             on_audio_stream_start=self.on_audio_stream_start if self.on_audio_stream_start else lambda x: None,
             on_audio_stream_stop=self.on_audio_stream_stop if self.on_audio_stream_stop else lambda x: None,
-            on_word=self.on_word if self.on_word else lambda x: None,
             on_character=self.on_character if self.on_character else lambda x: None,
             on_text_stream_stop=self.on_text_stream_stop if self.on_text_stream_stop else lambda x: None,
             on_text_stream_start=self.on_text_stream_start if self.on_text_stream_start else lambda x: None

@@ -18,155 +18,103 @@ class AsyncSubtitleSync(QObject):
     
     def __init__(self):
         super().__init__()
-        self.character_buffer = deque()  # 字符缓冲队列
-        self.word_timings = {}  # 存储单词时间信息
+        self.character_buffer = deque()  # 字符缓冲队列（保留兼容性）
         self.current_text = ""  # 当前累积的文本
         self.audio_start_time = None  # 音频开始播放时间
         self.subtitle_timer = QTimer()
         self.subtitle_timer.timeout.connect(self._process_subtitle_buffer)
         self.subtitle_timer.setSingleShot(False)
-        self.subtitle_timer.setInterval(10)  # 10ms检查一次，提高精度
+        self.subtitle_timer.setInterval(50)  # 英文50ms显示一个字符，匀速显示，中文100ms一个字符
         self.lock = asyncio.Lock()
-        self.character_index = 0  # 字符索引
-        self.processed_chars = set()  # 已处理的字符索引，避免重复
+        self.display_index = 0  # 当前应该显示的字符索引
         self._running = False
     
     async def restart_audio_playback(self):
         """重启音频播放（先停止再启动，确保状态清理）"""
         logger.debug("重启字幕同步器")
+        # 保存当前文本，避免在重启时丢失
+        saved_text = self.current_text
         await self.stop_audio_playback()
+        # 恢复文本内容
+        self.current_text = saved_text
         # 稍微等待确保停止操作完成
         await asyncio.sleep(0.01)
         await self.start_audio_playback()
-        logger.debug("字幕同步器重启完成")
+        logger.debug(f"字幕同步器重启完成，恢复文本长度: {len(self.current_text)}")
     
     async def start_audio_playback(self):
         """标记音频开始播放"""
         async with self.lock:
             self.audio_start_time = time.time() * 1000  # 转换为毫秒
             self.character_buffer.clear()
-            self.word_timings.clear()
-            self.current_text = ""
-            self.character_index = 0
-            self.processed_chars.clear()
+            # 不清空current_text，因为字符已经通过add_character添加了
+            self.display_index = 0
             self._running = True
             
+            logger.debug(f"准备启动定时器: isActive={self.subtitle_timer.isActive()}, interval={self.subtitle_timer.interval()}, text_length={len(self.current_text)}")
             if not self.subtitle_timer.isActive():
-                # 使用 QMetaObject.invokeMethod 确保在正确的线程中启动定时器
+                # 使用QMetaObject.invokeMethod确保在主线程中启动定时器
                 QMetaObject.invokeMethod(self.subtitle_timer, "start", Qt.ConnectionType.QueuedConnection)
+                logger.debug("已请求在主线程中启动定时器")
+                # 立即触发一次显示，避免等待第一个定时器间隔
+                QMetaObject.invokeMethod(self, "_process_subtitle_buffer", Qt.ConnectionType.QueuedConnection)
             logger.debug("音频播放开始，字幕同步启动")
     
     async def stop_audio_playback(self):
         """停止音频播放"""
         async with self.lock:
+            # 先显示所有剩余字符
+            remaining_chars = len(self.current_text) - self.display_index
+            if remaining_chars > 0:
+                logger.debug(f"音频停止前显示剩余 {remaining_chars} 个字符")
+                for i in range(self.display_index, len(self.current_text)):
+                    char = self.current_text[i]
+                    self.show_character.emit(char)
+                    logger.debug(f"显示剩余字符: '{char}' (索引: {i})")
+            
             self._running = False
-            # 使用 QMetaObject.invokeMethod 确保在正确的线程中停止定时器
-            QMetaObject.invokeMethod(self.subtitle_timer, "stop", Qt.ConnectionType.QueuedConnection)
+            # 使用QMetaObject.invokeMethod确保在主线程中停止定时器
+            if self.subtitle_timer.isActive():
+                QMetaObject.invokeMethod(self.subtitle_timer, "stop", Qt.ConnectionType.QueuedConnection)
+                logger.debug("已请求在主线程中停止定时器")
             self.character_buffer.clear()
-            self.word_timings.clear()
             self.current_text = ""
-            self.character_index = 0
-            self.processed_chars.clear()
+            self.display_index = 0
             self.audio_start_time = None
-            logger.debug("音频播放停止，字幕同步停止")
+            logger.debug("音频播放停止，字幕同步停止，已清理所有状态")
     
     async def add_character(self, character):
         """添加字符（来自on_character回调）"""
-        if not self._running:
-            return
-            
         async with self.lock:
             self.current_text += character
+            logger.debug(f"添加字符: '{character}', 当前文本长度: {len(self.current_text)}, _running={self._running}")
     
     async def add_word_timing(self, timing_info):
-        """添加单词时间信息（来自on_word回调）"""
-        if self.audio_start_time is None or not self._running:
-            return
-            
-        async with self.lock:
-            if hasattr(timing_info, 'word') and hasattr(timing_info, 'start_time'):
-                word = timing_info.word.strip()
-                start_time_ms = timing_info.start_time * 1000  # 转换为毫秒
-                
-                # 清理单词（移除特殊字符，但保留标点符号）
-                cleaned_word = word.strip('*').strip()
-                if not cleaned_word:
-                    return
-                
-                # 在当前文本中查找这个单词
-                word_start_index = self._find_word_in_text(cleaned_word)
-                if word_start_index >= 0:
-                    # 为单词的每个字符分配时间
-                    for i, char in enumerate(cleaned_word):
-                        char_index = word_start_index + i
-                        if char_index < len(self.current_text) and char_index not in self.processed_chars:
-                            target_time = self.audio_start_time + start_time_ms
-                            
-                            self.character_buffer.append({
-                                'character': self.current_text[char_index],
-                                'target_time': target_time,
-                                'char_index': char_index
-                            })
-                            self.processed_chars.add(char_index)
-                    
-                    # 处理单词后的标点符号和空格
-                    self._process_post_word_characters(word_start_index + len(cleaned_word), start_time_ms)
+        """添加单词时间信息（来自on_word回调）- 已弃用，保留接口兼容性"""
+        # 不再使用on_word回调，保留此方法仅为兼容性
+        pass
     
-    def _find_word_in_text(self, word):
-        """在当前文本中查找单词位置"""
-        # 从当前字符索引开始查找
-        search_text = self.current_text[self.character_index:]
-        
-        if not word:
-            return -1
-        
-        # 查找单词位置
-        word_index = search_text.find(word)
-        if word_index >= 0:
-            absolute_index = self.character_index + word_index
-            # 更新字符索引到单词结束位置
-            self.character_index = absolute_index + len(word)
-            return absolute_index
-        
-        return -1
-    
-    def _process_post_word_characters(self, start_index, word_start_time_ms):
-        """处理单词后的字符（标点符号、空格等）"""
-        # 为单词后的标点符号和空格分配相同的时间
-        i = start_index
-        while i < len(self.current_text):
-            char = self.current_text[i]
-            # 如果遇到字母或数字，说明是下一个单词了，停止处理
-            if char.isalnum():
-                break
-            
-            # 避免重复处理
-            if i not in self.processed_chars:
-                target_time = self.audio_start_time + word_start_time_ms
-                self.character_buffer.append({
-                    'character': char,
-                    'target_time': target_time,
-                    'char_index': i
-                })
-                self.processed_chars.add(i)
-            
-            i += 1
+
     
     def _process_subtitle_buffer(self):
-        """处理字幕缓冲区"""
+        """处理字幕缓冲区 - 匀速显示字符"""
+        logger.debug(f"定时器触发: audio_start_time={self.audio_start_time}, _running={self._running}, display_index={self.display_index}, text_length={len(self.current_text)}")
+        
         if self.audio_start_time is None or not self._running:
+            logger.debug("定时器触发但条件不满足，返回")
             return
             
-        current_time = time.time() * 1000
-        
-        # 处理所有应该显示的字符
-        while self.character_buffer:
-            char_info = self.character_buffer[0]
-            if current_time >= char_info['target_time']:
-                char_info = self.character_buffer.popleft()
-                self.show_character.emit(char_info['character'])
-            else:
-                break
+        # 检查是否有字符需要显示
+        if self.display_index < len(self.current_text):
+            char = self.current_text[self.display_index]
+            logger.debug(f"准备显示字符: '{char}' (索引: {self.display_index})")
+            self.show_character.emit(char)
+            self.display_index += 1
+            logger.debug(f"已发送字符显示信号: '{char}' (索引: {self.display_index-1})")
+        else:
+            # 没有更多字符需要显示，但保持定时器运行以处理新添加的字符
+            logger.debug(f"当前没有新字符需要显示，等待更多字符 (display_index={self.display_index}, text_length={len(self.current_text)})")
+            # 不停止定时器，因为可能还会有新字符添加
 
 
 class AsyncInterruptManager(QObject):

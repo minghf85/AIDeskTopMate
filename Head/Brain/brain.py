@@ -5,7 +5,7 @@ from PyQt6.QtCore import QThread, pyqtSignal, QObject, Qt, QTimer
 from Body.tlw import TransparentLive2dWindow, Live2DSignals
 from langchain_core.messages import HumanMessage, AIMessage, AIMessageChunk
 from Head.Brain.agent import AIFE
-from Head.ear_improved import ASRImproved as ASR
+from Head.ear import ASR
 from Head.mouth import TTS_GSV,TTS_realtime
 from Head.Brain.async_sync import (
     AsyncTextSignals, AsyncSubtitleSync, AsyncInterruptManager, 
@@ -102,13 +102,26 @@ class Brain(QObject):
             logger.error(f"启动ASR失败: {e}")
             
         if config.tts.mode == "GSV":
-            self.mouth = TTS_GSV()
+            if self.sync_subtitle:
+                self.mouth = TTS_GSV(
+                    on_character=self.show_character,
+                    on_audio_stream_start=self._on_audio_stream_start,
+                    on_audio_stream_stop=self._on_audio_stream_stop,
+                    on_text_stream_stop=self._on_text_stream_stop,
+                    on_text_stream_start=self._on_text_stream_start)
+            else:
+                self.mouth = TTS_GSV(
+                    on_character=self.direct_show_character,
+                    on_audio_stream_start=self._on_audio_stream_start,
+                    on_audio_stream_stop=self._on_audio_stream_stop,
+                    on_text_stream_stop=self._on_text_stream_stop,
+                    on_text_stream_start=self._on_text_stream_start
+                )
             # 后面再实现
         elif config.tts.mode == "realtime":
             # 根据同步设置决定回调函数
             if self.sync_subtitle:
                 self.mouth = TTS_realtime(
-                    on_word=self.show_word, 
                     on_character=self.show_character,
                     on_audio_stream_start=self._on_audio_stream_start,
                     on_audio_stream_stop=self._on_audio_stream_stop,
@@ -117,7 +130,6 @@ class Brain(QObject):
                 )
             else:
                 self.mouth = TTS_realtime(
-                    on_word=None, 
                     on_character=self.direct_show_character,
                     on_audio_stream_start=self._on_audio_stream_start,
                     on_audio_stream_stop=self._on_audio_stream_stop,
@@ -235,7 +247,7 @@ class Brain(QObject):
 
     def on_stream_chat_callback(self, text: str):
         """处理流式聊天返回的文本"""
-        logger.info(f"流式聊天返回: {text}")
+        # logger.info(f"流式聊天返回: {text}")
         if not self.received_first_chunk:
             self.aife_response_time = time.time()
         self.received_first_chunk = True
@@ -249,20 +261,19 @@ class Brain(QObject):
 
     def show_character(self, character: str):
         """处理TTS返回的字符信息（包含标点符号）- 仅在同步模式下使用"""
+        logger.debug(f"show_character被调用: '{character}', sync_subtitle={self.sync_subtitle}, subtitle_sync存在={self.subtitle_sync is not None}")
         if self.sync_subtitle and self.subtitle_sync:
             # 将字符添加到字幕同步器（异步调用）
             self.async_loop.run_coroutine(self.subtitle_sync.add_character(character))
 
-    def show_word(self, timing_info):
-        """处理TTS返回的单词时间信息 - 仅在同步模式下使用"""
-        if self.sync_subtitle and self.subtitle_sync:
-            # 将时间信息添加到字幕同步器（异步调用）
-            self.async_loop.run_coroutine(self.subtitle_sync.add_word_timing(timing_info))
+
     
     def _show_character_delayed(self, character: str):
         """实际显示字符的方法 - 仅在同步模式下使用"""
+        logger.debug(f"_show_character_delayed被调用: '{character}', msgbox存在={self.window.msgbox is not None}")
         if self.window.msgbox:
             self.text_signals.update_text.emit(character)
+            logger.debug(f"已发送字符到UI: '{character}'")
 
     def _start_interrupt_thread(self, mode):
         """启动打断操作（异步）"""
@@ -612,6 +623,11 @@ class Brain(QObject):
         if self.transcription_complete_time:
             total_delay = self.audio_start_time - self.transcription_complete_time
             logger.info(f"总响应延迟(从转录完成到开始播放): {total_delay:.3f}秒")
+        
+        # 启动字幕同步（如果启用）
+        if self.sync_subtitle and self.subtitle_sync:
+            self.async_loop.run_coroutine(self.subtitle_sync.start_audio_playback())
+            logger.debug("字幕同步已启动")
 
         # 重置时间戳，为下一轮做准备
         self.speech_detect_time = None
@@ -620,7 +636,11 @@ class Brain(QObject):
         self.audio_start_time = None
 
     def _on_audio_stream_stop(self):
-        pass
+        """处理音频流停止播放的回调"""
+        # 停止字幕同步（如果启用）
+        if self.sync_subtitle and self.subtitle_sync:
+            self.async_loop.run_coroutine(self.subtitle_sync.stop_audio_playback())
+            logger.debug("字幕同步已停止")
 
 if __name__ == "__main__":
     brain = Brain()

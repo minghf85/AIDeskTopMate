@@ -21,7 +21,7 @@ EDGE_SILENCE_END_MS = 20  # 音频结尾静音时长（毫秒）
 class GSVStream:
     """GSV TTS 流处理器 - 低延迟队列异步并行版本"""
     
-    def __init__(self, on_audio_stream_start=None, on_audio_stream_stop=None, on_word=None,
+    def __init__(self, on_audio_stream_start=None, on_audio_stream_stop=None,
                  on_character=None, on_text_stream_start=None, on_text_stream_stop=None):
         # 回调函数
         self.on_audio_stream_start = on_audio_stream_start
@@ -30,10 +30,15 @@ class GSVStream:
         self.on_text_stream_start = on_text_stream_start
         self.on_text_stream_stop = on_text_stream_stop
 
+
         # 状态变量
         self._current_text = ""
         self._is_playing = False
         self._input_data = None
+        self._text_stream_started = False  # 文本流是否已开始
+        self._audio_started = False  # 音频是否已开始播放
+        self._character_buffer = []  # 字符缓冲区，在音频开始前暂存字符
+
         
         # 配置
         self.tts_url = config_json["tts"]["base_url"]
@@ -57,6 +62,8 @@ class GSVStream:
         self.last_mouth_value = 0.0
         self.smoothing_factor = 0.3
         
+
+        
     def feed(self, input_data: Union[str, Iterator[str]]):
         """输入文本或文本迭代器"""
         self._input_data = input_data
@@ -69,6 +76,9 @@ class GSVStream:
     
     def _start_async_processing(self):
         """启动异步处理"""
+        # 重新初始化队列以避免事件循环绑定问题
+        self.text_queue = asyncio.Queue()
+        self.audio_queue = queue.Queue()
         asyncio.run(self._run_low_latency_system())
         
     def apply_edge_silence(self, audio_data, start_silence_ms=None, end_silence_ms=None):
@@ -110,14 +120,18 @@ class GSVStream:
     async def _run_low_latency_system(self):
         """运行低延迟TTS系统"""
         try:
+            # 触发文本流开始回调
             if self.on_text_stream_start:
                 self.on_text_stream_start()
             
             self._is_playing = True
+            self._text_stream_started = True  # 标记文本流已开始
             
             # 启动音频播放器线程
             audio_thread = threading.Thread(target=self.audio_player, daemon=True)
             audio_thread.start()
+            
+
             
             # 处理输入数据
             if isinstance(self._input_data, str):
@@ -136,18 +150,23 @@ class GSVStream:
             # 等待音频播放完成
             audio_thread.join(timeout=10)
             
-            if self.on_text_stream_stop:
+            # 触发文本流停止回调
+            if self.on_text_stream_stop and self._text_stream_started:
                 self.on_text_stream_stop()
+                self._text_stream_started = False
                 
         except Exception as e:
             logger.error(f"低延迟系统错误: {e}")
         finally:
-            self._is_playing = False
+
+                self._is_playing = False
             
     async def _simulate_text_streaming(self, text: str) -> AsyncGenerator[str, None]:
         """模拟文本流式生成"""
-        self._current_text = text
+        self._current_text = ""
         for char in text:
+            self._current_text += char
+            # 触发字符回调，模拟TextToAudioStream的行为
             if self.on_character:
                 self.on_character(char)
             yield char
@@ -155,16 +174,22 @@ class GSVStream:
             
     async def _process_text_iterator(self, text_iterator) -> AsyncGenerator[str, None]:
         """处理文本迭代器"""
-        full_text = ""
         for text_chunk in text_iterator:
             if text_chunk:
-                full_text += text_chunk
-                self._current_text = full_text
-                if self.on_character:
-                    self.on_character(text_chunk)
-                yield text_chunk
+                # 按字符处理，如果音频已开始则立即触发回调，否则存储到缓冲区
+                for char in text_chunk:
+                    self._current_text += char
+                    if self._audio_started and self.on_character:
+                        self.on_character(char)
+                    elif not self._audio_started:
+                        # 音频还未开始，将字符存储到缓冲区
+                        self._character_buffer.append(char)
+                    yield char
+                    await asyncio.sleep(0.001)
             await asyncio.sleep(0.001)
     
+
+      
     async def text_accumulator(self, text_stream: AsyncGenerator[str, None]):
         """文本累积器：收集文本片段并按标点符号分句发送给TTS
         
@@ -190,11 +215,11 @@ class GSVStream:
                     
                     # 检查待发送文本长度是否达到阈值
                     if len(pending_text) >= self.text_chunk_size:
-                        logger.info(f"文本长度达到阈值({len(pending_text)}>={self.text_chunk_size})，发送到TTS队列: '{pending_text}'")
+                        # logger.info(f"文本长度达到阈值({len(pending_text)}>={self.text_chunk_size})，发送到TTS队列: '{pending_text}'")
                         await self.text_queue.put(pending_text)
                         pending_text = ""
-                    else:
-                        logger.info(f"文本长度不足({len(pending_text)}<{self.text_chunk_size})，累积到下一段: '{pending_text}'")
+                    # else:
+                    #     logger.info(f"文本长度不足({len(pending_text)}<{self.text_chunk_size})，累积到下一段: '{pending_text}'")
         
         # 处理剩余文本
         if accumulated_text.strip():
@@ -280,6 +305,10 @@ class GSVStream:
         """音频播放器：从音频队列获取音频数据并连续播放"""
         logger.info("音频播放器启动")
         
+        # 重置状态变量
+        self._audio_started = False
+        self._character_buffer.clear()
+        
         # 初始化音频流，使用优化的参数以减少爆破音
         self.stream = self.p.open(
             format=pa.paInt16,
@@ -294,9 +323,6 @@ class GSVStream:
         # 预热音频流，避免首次播放的延迟
         silence_warmup = b'\x00\x00' * 512
         self.stream.write(silence_warmup)
-        
-        if self.on_audio_stream_start:
-            self.on_audio_stream_start()
         
         first_play_time = None
         chunk_count = 0
@@ -321,10 +347,10 @@ class GSVStream:
                     
                     # 检测静音数据（连续的零字节）用于日志记录
                     is_silence = audio_chunk == b'\x00\x00' * (len(audio_chunk) // 2)
-                    if is_silence:
-                        logger.info(f"播放静音分隔 #{chunk_count}，时长: {len(audio_chunk)/2/32000*1000:.0f}ms")
-                    else:
-                        logger.info(f"播放音频块 #{chunk_count}，大小: {len(audio_chunk)} bytes")
+                    # if is_silence:
+                    #     logger.info(f"播放静音分隔 #{chunk_count}，时长: {len(audio_chunk)/2/32000*1000:.0f}ms")
+                    # else:
+                    #     logger.info(f"播放音频块 #{chunk_count}，大小: {len(audio_chunk)} bytes")
                     
                     if first_play_time is None:
                         first_play_time = current_time
@@ -335,6 +361,15 @@ class GSVStream:
                     
                     # 当缓冲区达到最小大小时开始播放
                     if len(audio_buffer) >= min_buffer_size:
+                        # 检查是否是第一次播放真正的音频（非静音）
+                        if not self._audio_started and not is_silence:
+                            if self.on_audio_stream_start:
+                                self.on_audio_stream_start()
+                            self._audio_started = True
+                            # 触发缓冲区中的字符回调
+                            self._trigger_buffered_characters()
+                            logger.info("触发音频流开始回调 - 开始播放真正的音频")
+                        
                         # 播放缓冲区中的数据
                         self.stream.write(audio_buffer[:min_buffer_size])
                         # 更新RMS值
@@ -344,12 +379,25 @@ class GSVStream:
                     
                     if chunk_count % 20 == 0:
                         elapsed = (current_time - first_play_time) * 1000 if first_play_time else 0
-                        logger.info(f"播放进度: {chunk_count} 块，已播放: {elapsed:.1f}ms，缓冲区大小: {len(audio_buffer)}")
+                        # logger.info(f"播放进度: {chunk_count} 块，已播放: {elapsed:.1f}ms，缓冲区大小: {len(audio_buffer)}")
                         
                 except queue.Empty:
                     # 队列为空时，如果缓冲区有数据就播放
                     if audio_buffer:
                         play_size = min(len(audio_buffer), 512)  # 播放小块数据
+                        
+                        # 检查是否是第一次播放真正的音频（非静音）
+                        if not self._audio_started:
+                            audio_data_check = np.frombuffer(audio_buffer[:play_size], dtype=np.int16)
+                            is_silence_check = np.all(audio_data_check == 0)
+                            if not is_silence_check:
+                                if self.on_audio_stream_start:
+                                    self.on_audio_stream_start()
+                                self._audio_started = True
+                                # 触发缓冲区中的字符回调
+                                self._trigger_buffered_characters()
+                                logger.info("触发音频流开始回调 - 开始播放真正的音频（队列空时）")
+                        
                         self.stream.write(audio_buffer[:play_size])
                         # 更新RMS值
                         audio_data = np.frombuffer(audio_buffer[:play_size], dtype=np.int16)
@@ -371,6 +419,14 @@ class GSVStream:
             if self.on_audio_stream_stop:
                 self.on_audio_stream_stop()
             logger.info(f"音频播放完成，共播放{chunk_count}个音频块")
+    
+    def _trigger_buffered_characters(self):
+        """触发缓冲区中的字符回调"""
+        if self.on_character and self._character_buffer:
+            logger.info(f"触发缓冲区中的{len(self._character_buffer)}个字符")
+            for char in self._character_buffer:
+                self.on_character(char)
+            self._character_buffer.clear()
     
     def _update_rms(self, audio_chunk):
         """更新RMS值"""
@@ -402,6 +458,9 @@ class GSVStream:
         """停止播放"""
         logger.info("请求停止播放")
         self._is_playing = False
+        # 重置状态变量
+        self._audio_started = False
+        self._character_buffer.clear()
         # 清空音频队列
         try:
             while True:
@@ -427,7 +486,7 @@ if __name__ == "__main__":
     logger.info("开始测试GSVStream...")
     
     def on_audio_start():
-        logger.info("音频流开始回调")
+        logger.info("开始听到声音了")
     
     def on_audio_stop():
         logger.info("音频流停止回调")
@@ -435,10 +494,20 @@ if __name__ == "__main__":
     def on_character(char):
         logger.info(f"字符回调: {char}")
     
+    def on_text_start():
+        logger.info("文本流开始回调")
+    
+    def on_text_stop():
+        logger.info("文本流停止回调")
+    
+
+    
     tts = GSVStream(
         on_audio_stream_start=on_audio_start,
         on_audio_stream_stop=on_audio_stop,
-        on_character=on_character
+        on_character=on_character,
+        on_text_stream_start=on_text_start,
+        on_text_stream_stop=on_text_stop
     )
     
     # 测试1: 普通文本
@@ -447,7 +516,9 @@ if __name__ == "__main__":
     
     tts.feed(test_text)
     tts.play_async()
-    
+    # time.sleep(10)  # 等待10秒
+    # tts.feed(test_text)
+    # tts.play_async()
     # 等待播放完成
     import time
     logger.info("等待播放完成...")
@@ -471,12 +542,15 @@ if __name__ == "__main__":
     tts2 = GSVStream(
         on_audio_stream_start=on_audio_start,
         on_audio_stream_stop=on_audio_stop,
-        on_character=on_character
+        on_character=on_character,
+        on_text_stream_start=on_text_start,
+        on_text_stream_stop=on_text_stop
     )
     
     tts2.feed(text_iterator)
     tts2.play_async()
-    
+    # tts2.feed(text_iterator)
+    # tts2.play_async()
     logger.info("等待迭代器播放完成...")
     time.sleep(50)  # 等待30秒
     
