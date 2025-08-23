@@ -98,7 +98,7 @@ class AsyncSubtitleSync(QObject):
     
     def _process_subtitle_buffer(self):
         """处理字幕缓冲区 - 匀速显示字符"""
-        logger.debug(f"定时器触发: audio_start_time={self.audio_start_time}, _running={self._running}, display_index={self.display_index}, text_length={len(self.current_text)}")
+        # logger.debug(f"定时器触发: audio_start_time={self.audio_start_time}, _running={self._running}, display_index={self.display_index}, text_length={len(self.current_text)}")
         
         if self.audio_start_time is None or not self._running:
             logger.debug("定时器触发但条件不满足，返回")
@@ -111,9 +111,9 @@ class AsyncSubtitleSync(QObject):
             self.show_character.emit(char)
             self.display_index += 1
             logger.debug(f"已发送字符显示信号: '{char}' (索引: {self.display_index-1})")
-        else:
+        # else:
             # 没有更多字符需要显示，但保持定时器运行以处理新添加的字符
-            logger.debug(f"当前没有新字符需要显示，等待更多字符 (display_index={self.display_index}, text_length={len(self.current_text)})")
+            # logger.debug(f"当前没有新字符需要显示，等待更多字符 (display_index={self.display_index}, text_length={len(self.current_text)})")
             # 不停止定时器，因为可能还会有新字符添加
 
 

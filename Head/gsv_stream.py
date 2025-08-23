@@ -158,8 +158,8 @@ class GSVStream:
         except Exception as e:
             logger.error(f"低延迟系统错误: {e}")
         finally:
-
-                self._is_playing = False
+            # 不在这里设置_is_playing = False，让audio_player线程自己控制播放状态
+            pass
             
     async def _simulate_text_streaming(self, text: str) -> AsyncGenerator[str, None]:
         """模拟文本流式生成"""
@@ -305,7 +305,8 @@ class GSVStream:
         """音频播放器：从音频队列获取音频数据并连续播放"""
         logger.info("音频播放器启动")
         
-        # 重置状态变量
+        # 设置播放状态和重置状态变量
+        self._is_playing = True
         self._audio_started = False
         self._character_buffer.clear()
         
@@ -340,6 +341,10 @@ class GSVStream:
                         # 播放剩余的缓冲区数据
                         if audio_buffer:
                             self.stream.write(audio_buffer)
+                            # 更新RMS值
+                            audio_data = np.frombuffer(audio_buffer, dtype=np.int16)
+                            self._update_rms(audio_data)
+                            logger.info(f"播放最后缓冲区数据，大小: {len(audio_buffer)} bytes")
                         break
                     
                     chunk_count += 1
@@ -416,9 +421,13 @@ class GSVStream:
                     self.stream.close()
                 except:
                     pass
+            # 重置播放状态和RMS值
+            self._is_playing = False
+            self._current_rms = 0.0
+            self.last_mouth_value = 0.0
             if self.on_audio_stream_stop:
                 self.on_audio_stream_stop()
-            logger.info(f"音频播放完成，共播放{chunk_count}个音频块")
+            logger.info(f"音频播放完成，共播放{chunk_count}个音频块，播放状态和RMS已重置")
     
     def _trigger_buffered_characters(self):
         """触发缓冲区中的字符回调"""
@@ -461,6 +470,9 @@ class GSVStream:
         # 重置状态变量
         self._audio_started = False
         self._character_buffer.clear()
+        # 重置RMS值
+        self._current_rms = 0.0
+        self.last_mouth_value = 0.0
         # 清空音频队列
         try:
             while True:
@@ -489,7 +501,7 @@ if __name__ == "__main__":
         logger.info("开始听到声音了")
     
     def on_audio_stop():
-        logger.info("音频流停止回调")
+        logger.info("声音停止了")
     
     def on_character(char):
         logger.info(f"字符回调: {char}")
@@ -499,6 +511,25 @@ if __name__ == "__main__":
     
     def on_text_stop():
         logger.info("文本流停止回调")
+    
+    # 异步显示RMS值的函数
+    async def display_rms_values(tts_instance, interval=0.1):
+        """异步显示GetRms的值"""
+        while tts_instance.is_playing():
+            rms_value = tts_instance.GetRms()
+            logger.info(f"当前RMS值: {rms_value:.4f}")
+            await asyncio.sleep(interval)
+        logger.info("RMS监控结束")
+    
+    # 启动RMS监控的函数
+    def start_rms_monitoring(tts_instance):
+        """启动RMS值监控"""
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(display_rms_values(tts_instance))
+        finally:
+            loop.close()
     
 
     
@@ -552,6 +583,8 @@ if __name__ == "__main__":
     # tts2.feed(text_iterator)
     # tts2.play_async()
     logger.info("等待迭代器播放完成...")
+    while tts2.is_playing():
+        logger.info(f"当前RMS值: {tts2.GetRms():.4f}")
     time.sleep(50)  # 等待30秒
     
     logger.info("迭代器测试完成")
