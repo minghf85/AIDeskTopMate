@@ -1,7 +1,7 @@
 import numpy as np
 import time
 import json
-from loguru import logger
+from utils.log_manager import LogManager
 from typing import Optional
 import asyncio
 import websockets
@@ -36,6 +36,10 @@ class ASR(QThread):
                  channels: int = 1,
                  chunk_size: int = 300):
         super().__init__()
+        
+        # Initialize logging
+        self.log_manager = LogManager()
+        self.logger = self.log_manager.get_logger('ear')
         
         # WebSocket 配置
         base_url = url.split('?')[0]  # 移除可能存在的查询参数
@@ -75,7 +79,7 @@ class ASR(QThread):
         # 控制标志
         self.should_stop = threading.Event()
 
-        logger.info(f"ASR 初始化完成: URL={self.url}, 采样率={self.sample_rate}")
+        self.logger.info(f"ASR 初始化完成: URL={self.url}, 采样率={self.sample_rate}")
 
     def audio_callback(self, in_data, frame_count, time_info, status):
         """音频回调函数 - 使用线程安全队列"""
@@ -133,14 +137,14 @@ class ASR(QThread):
                 await asyncio.sleep(0.05)  # 50ms延迟，减少CPU使用
                 
         except asyncio.CancelledError:
-            logger.info("音频发送已停止")
+            self.logger.info("音频发送已停止")
         except Exception as e:
-            logger.error(f"发送音频数据过程错误: {e}")
+            self.logger.error(f"发送音频数据过程错误: {e}")
 
     async def receive_messages(self):
         """接收 WebSocket 消息"""
         if not self.ws:
-            logger.error("WebSocket 连接未建立")
+            self.logger.error("WebSocket 连接未建立")
             return
             
         try:
@@ -150,12 +154,12 @@ class ASR(QThread):
                     
                 try:
                     res_json = json.loads(message)
-                    logger.debug(f"收到消息: {res_json}")
+                    self.logger.debug(f"收到消息: {res_json}")
                     
                     # 处理检测到语音/说话人的信号
                     if res_json.get("code") == 1:
                         info = res_json.get("info", "")
-                        logger.info(f"检测到语音活动: {info}")
+                        self.logger.info(f"检测到语音活动: {info}")
                         with QMutexLocker(self.mutex):
                             self.is_hearing = True
                         self.hearStart.emit()
@@ -164,7 +168,7 @@ class ASR(QThread):
                     elif res_json.get("code") == 0:
                         transcription = res_json.get("data", "")
                         if transcription.strip():
-                            logger.info(f"转录结果: {transcription}")
+                            self.logger.info(f"转录结果: {transcription}")
                             
                             # 发射转录完成信号
                             self.transcriptionReady.emit(transcription)
@@ -173,18 +177,18 @@ class ASR(QThread):
                                 self.is_hearing = False
                             
                 except json.JSONDecodeError:
-                    logger.error(f"解析响应失败: {message}")
+                    self.logger.error(f"解析响应失败: {message}")
                     
         except websockets.exceptions.ConnectionClosed:
-            logger.info("WebSocket 接收连接已关闭")
+            self.logger.info("WebSocket 接收连接已关闭")
         except Exception as e:
-            logger.error(f"接收消息错误: {e}")
+            self.logger.error(f"接收消息错误: {e}")
             self.errorOccurred.emit(f"接收消息错误: {e}")
 
     async def start_websocket_session(self):
         """启动 WebSocket 会话"""
         try:
-            logger.info(f"正在连接到 {self.url}...")
+            self.logger.info(f"正在连接到 {self.url}...")
             
             # 设置连接超时
             async with websockets.connect(
@@ -194,7 +198,7 @@ class ASR(QThread):
                 close_timeout=10
             ) as ws:
                 self.ws = ws
-                logger.info("WebSocket 连接已建立")
+                self.logger.info("WebSocket 连接已建立")
                 
                 # 启动音频流
                 self.setup_audio_stream()
@@ -218,7 +222,7 @@ class ASR(QThread):
                         pass
                 
         except Exception as e:
-            logger.error(f"WebSocket 连接错误: {e}")
+            self.logger.error(f"WebSocket 连接错误: {e}")
             self.errorOccurred.emit(f"连接错误: {e}")
         finally:
             self.ws = None

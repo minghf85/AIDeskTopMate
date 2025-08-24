@@ -1,7 +1,7 @@
 from typing import Dict, Any, List, Optional, Callable, Generator, Union, Tuple, AsyncGenerator
 import logging
-from loguru import logger
 import json
+from utils.log_manager import LogManager
 import time
 from aiostream import stream
 from abc import ABC, abstractmethod
@@ -50,6 +50,10 @@ class AIFE:
     """AI Virtual Companion Agent"""
 
     def __init__(self, agent_config=config.agent, stream_chat_callback=None, live2d_signals=None, message_signals=None):
+        # Initialize logging
+        self.log_manager = LogManager()
+        self.logger = self.log_manager.get_logger('agent')
+        
         # Basic components
         self.config = agent_config
         self.llm = self._initialize_llm(self.config.llm.platform, self.config.llm.llm_config)
@@ -135,7 +139,7 @@ class AIFE:
                     log="Automatically added ShouldRespond: Default response required"
                 ))
             
-            logger.info(f"Planned action sequence: {[a.tool for a in actions]}")
+            self.logger.info(f"Planned action sequence: {[a.tool for a in actions]}")
             return actions if actions else [
                 AgentAction(
                     tool="ShouldRespond",
@@ -279,20 +283,20 @@ class AIFE:
                 # Send signal to Live2D
                 if self.live2d_signals:
                     self.live2d_signals.expression_requested.emit(expression_id)
-                logger.info(f"Set expression: {expression} (ID: {expression_id})")
+                self.logger.info(f"Set expression: {expression} (ID: {expression_id})")
                 return f"✓ Expression set: {expression}"
             else:
                 available = list(self.config.live2d.available_expression.keys())
                 return f"✗ Invalid expression: {expression}"
         except Exception as e:
-            logger.error(f"Error setting expression: {e}")
+            self.logger.error(f"Error setting expression: {e}")
             return f"✗ Failed to set expression"
     
     async def _start_motion(self, motion_input: str) -> str:
         """Start Live2D motion"""
         # Clean input
         motion_input = motion_input.strip().split('\n')[0].split()[0]
-        logger.info(f"_start_motion input parameter {len(motion_input)}: {motion_input}")
+        self.logger.info(f"_start_motion input parameter {len(motion_input)}: {motion_input}")
         
         try:
             # Parse input format: group_index
@@ -316,20 +320,20 @@ class AIFE:
                 self.live2d_signals.motion_requested.emit(group, index, 3)
             
             motion_desc = motions[index]
-            logger.info(f"Start motion: {group}_{index} - {motion_desc}")
+            self.logger.info(f"Start motion: {group}_{index} - {motion_desc}")
             return f"✓ Motion executed: {group}_{index}"
             
         except ValueError:
             return f"✗ Invalid motion format"
         except Exception as e:
-            logger.error(f"Error starting motion: {e}")
+            self.logger.error(f"Error starting motion: {e}")
             return f"✗ Failed to execute motion"
     
     async def _show_emoji(self, emoji_name: str) -> str:
         """Send emoji"""
         # Clean input
         emoji_name = emoji_name.strip().split('\n')[0].split()[0]
-        logger.info(f"_show_emoji input parameter {len(emoji_name)}: {emoji_name}")
+        self.logger.info(f"_show_emoji input parameter {len(emoji_name)}: {emoji_name}")
         
         try:
             available_emojis = self._get_available_emojis()
@@ -338,19 +342,19 @@ class AIFE:
                 if self.message_signals:
                     emoji_path = os.path.join(self.config.assets.assets_path, emoji_name)
                     self.message_signals.emoji_path.emit(emoji_path)
-                logger.info(f"Send emoji: {emoji_name}")
+                self.logger.info(f"Send emoji: {emoji_name}")
                 return f"✓ Emoji sent: {emoji_name}"
             else:
                 return f"✗ Emoji not found"
         except Exception as e:
-            logger.error(f"Error sending emoji: {e}")
+            self.logger.error(f"Error sending emoji: {e}")
             return f"✗ Failed to send emoji"
 
     async def _play_audio(self, audio_name: str) -> str:
         """Play audio"""
         # Clean input
         audio_name = audio_name.strip().split('\n')[0].split()[0]
-        logger.info(f"_play_audio input parameter {len(audio_name)}: {audio_name}")
+        self.logger.info(f"_play_audio input parameter {len(audio_name)}: {audio_name}")
         
         try:
             available_audio = self._get_available_audio()
@@ -359,12 +363,12 @@ class AIFE:
                 if self.message_signals:
                     audio_path = os.path.join(self.config.assets.assets_path, audio_name)
                     self.message_signals.audio_path.emit(audio_path)
-                logger.info(f"Play audio: {audio_name}")
+                self.logger.info(f"Play audio: {audio_name}")
                 return f"✓ Audio played: {audio_name}"
             else:
                 return f"✗ Audio not found"
         except Exception as e:
-            logger.error(f"Error playing audio: {e}")
+            self.logger.error(f"Error playing audio: {e}")
             return f"✗ Failed to play audio"
 
     async def _should_respond(self, should_respond: str) -> str:
@@ -411,10 +415,10 @@ class AIFE:
             if test_response:
                 return llm
             else:
-                logger.error(f"llm连接失败，请检查配置或代理")
+                self.logger.error(f"llm连接失败，请检查配置或代理")
                 return None
         except:
-            logger.error(f"llm连接失败，请检查配置或代理")
+            self.logger.error(f"llm连接失败，请检查配置或代理")
             return None
 
     async def agent_chat(self, user_input: str) -> AsyncGenerator[str, None]:
@@ -431,12 +435,12 @@ class AIFE:
                 result = await self.agent_executor.ainvoke({"input": user_input})
                 
                 # Display execution results
-                logger.info("📋 Multi-action execution details:")
+                self.logger.info("📋 Multi-action execution details:")
                 if 'intermediate_steps' in result:
                     for action, observation in result['intermediate_steps']:
-                        logger.info(f"➤ {action.tool}:")
-                        logger.info(f"  Input: {action.tool_input}")
-                        logger.info(f"  Result: {observation}")
+                        self.logger.info(f"➤ {action.tool}:")
+                        self.logger.info(f"  Input: {action.tool_input}")
+                        self.logger.info(f"  Result: {observation}")
                         
                         # Record executed actions
                         self.executed_actions.append({
@@ -456,13 +460,13 @@ class AIFE:
                 # Check if ShouldRespond was executed
                 if common_chat_result is None:
                     # If ShouldRespond was not executed, log a warning and default to requiring a response
-                    logger.warning("Agent did not execute ShouldRespond tool, defaulting to response required")
+                    self.logger.warning("Agent did not execute ShouldRespond tool, defaulting to response required")
                     common_chat_result = True
                 
                 # If ShouldRespond returns True, execute language response
                 if common_chat_result:
                     # Construct context with executed actions
-                    logger.info(f"ShouldRespond result is True, executed actions: {self.executed_actions}")
+                    self.logger.info(f"ShouldRespond result is True, executed actions: {self.executed_actions}")
                     
                     # Filter executed_actions, keeping only actually executed actions
                     filtered_actions = []
@@ -490,12 +494,12 @@ class AIFE:
 
             except Exception as e:
                 error_msg = f"Error executing Agent tools: {str(e)}"
-                logger.error(error_msg)
+                self.logger.error(error_msg)
                 yield error_msg
                 
         except Exception as e:
             error_msg = f"Agent chat processing failed: {str(e)}"
-            logger.error(error_msg)
+            self.logger.error(error_msg)
             yield error_msg
 
     async def common_chat(self, user_input: str) -> AsyncGenerator[str, None]:
@@ -513,7 +517,7 @@ class AIFE:
                 
         except Exception as e:
             error_msg = f"Chat processing failed: {str(e)}"
-            logging.error(error_msg)
+            self.logger.error(error_msg)
             yield error_msg
 
     async def _safe_call_callback(self, content: str):
@@ -527,7 +531,7 @@ class AIFE:
                     # 如果是同步函数，直接调用
                     self.stream_chat_callback(content)
         except Exception as e:
-            logger.error(f"调用stream_chat_callback时出错: {e}")
+            self.logger.error(f"调用stream_chat_callback时出错: {e}")
 
     # ============ 系统状态查询 ============
     

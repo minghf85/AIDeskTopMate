@@ -15,7 +15,7 @@ import os
 import re
 from modelscope.pipelines import pipeline
 from modelscope.utils.constant import Tasks
-from loguru import logger
+from utils.log_manager import LogManager
 import sys
 import json
 import traceback
@@ -23,11 +23,9 @@ import time
 from dotmap import DotMap
 import toml
 
-
-logger.remove()
-log_format = "{time:YYYY-MM-DD HH:mm:ss} [{level}] {file}:{line} - {message}"
-logger.add(sys.stdout, format=log_format, level="DEBUG", filter=lambda record: record["level"].no < 40)
-logger.add(sys.stderr, format=log_format, level="ERROR", filter=lambda record: record["level"].no >= 40)
+# Initialize logging
+log_manager = LogManager()
+logger = log_manager.get_logger('stt')
 
 
 class Config(BaseSettings):

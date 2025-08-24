@@ -2,7 +2,11 @@ import threading
 import pyaudio as pa
 import numpy as np
 import toml
-import loguru
+from utils.log_manager import LogManager
+
+# Initialize logging
+log_manager = LogManager()
+logger = log_manager.get_logger('gsv')
 import httpx
 import asyncio
 import queue

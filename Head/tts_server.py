@@ -15,12 +15,16 @@ DEBUG_LOGGING = args.debug
 dotenv.load_dotenv()
 
 if __name__ == "__main__":
-    import logging
-
+    from utils.log_manager import LogManager
+    
+    # Initialize logging
+    log_manager = LogManager()
+    logger = log_manager.get_logger('tts')
+    
     if DEBUG_LOGGING:
-        logging.basicConfig(level=logging.DEBUG)
+        logger.info("Debug logging enabled for TTS server")
     else:
-        logging.basicConfig(level=logging.WARNING)
+        logger.info("TTS server starting with warning level logging")
 
 if __name__ == "__main__":
     print(f"Starting server on port {PORT}")
@@ -39,7 +43,6 @@ from fastapi.staticfiles import StaticFiles
 
 from queue import Queue
 import threading
-import logging
 import uvicorn
 import wave
 import io
@@ -153,7 +156,7 @@ def set_engine(request: Request, engine_name: str = Query(...)):
         _set_engine(engine_name)
         return {"message": f"Switched to {engine_name} engine"}
     except Exception as e:
-        logging.error(f"Error switching engine: {str(e)}")
+        logger.error(f"Error switching engine: {str(e)}")
         return {"error": "Failed to switch engine"}
 
 
@@ -161,12 +164,12 @@ def play_text_to_speech(stream, text, audio_queue):
     set_speaking(text, True)
 
     def on_audio_chunk(chunk):
-        logging.debug("Received chunk")
+        logger.debug("Received chunk")
         audio_queue.put(chunk)
 
     try:
         stream.feed(text)
-        logging.debug(f"Playing audio for text: {text}")
+        logger.debug(f"Playing audio for text: {text}")
         print(f'Synthesizing: "{text}"')
         if current_engine.engine_name == "edge":
             stream.play(on_audio_chunk=on_audio_chunk, muted=True)
@@ -229,26 +232,26 @@ def audio_chunk_generator(audio_queue, send_wave_headers):
             while True:
                 chunk = audio_queue.get()
                 if chunk is None:
-                    logging.debug("Terminating stream")
+                    logger.debug("Terminating stream")
                     break
                 
                 if current_engine.engine_name == "edge":
                     if first_chunk:
                         if send_wave_headers:
-                            logging.debug("Sending wave header for Edge TTS")
+                            logger.debug("Sending wave header for Edge TTS")
                             yield create_wave_header_for_edge()
                         first_chunk = False
                 else:
                     if first_chunk:
                         if send_wave_headers and not current_engine.engine_name == "elevenlabs":
-                            logging.debug("Sending wave header")
+                            logger.debug("Sending wave header")
                             yield create_wave_header_for_engine(current_engine)
                         first_chunk = False
                 
-                logging.debug("Sending chunk")
+                logger.debug("Sending chunk")
                 yield chunk
         except Exception as e:
-            logging.error(f"Error during streaming: {str(e)}")
+            logger.error(f"Error during streaming: {str(e)}")
 
 
 def is_currently_speaking(text):
@@ -300,7 +303,7 @@ def tts_text(request: Request, text: str = Query(...)):
             target=play_text_to_speech, args=(stream, text), daemon=True
         ).start()
     else:
-        logging.debug("Can't play audio, another instance is already running")
+        logger.debug("Can't play audio, another instance is already running")
 
     return StreamingResponse(
         audio_chunk_generator(browser_request), media_type="audio/wav"
@@ -319,7 +322,7 @@ def get_voices(engine: str = Query(...)):
         raise HTTPException(status_code=404, detail=f"Engine {engine} not found")
         
     try:
-        logging.debug(f"Getting voices for engine: {engine}")
+        logger.debug(f"Getting voices for engine: {engine}")
         engine_instance = engines[engine.lower()]
         voices_list = []
         voices = engine_instance.get_voices()
@@ -334,7 +337,7 @@ def get_voices(engine: str = Query(...)):
                 
         return voices_list
     except Exception as e:
-        logging.error(f"Error getting voices for {engine}: {str(e)}")
+        logger.error(f"Error getting voices for {engine}: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -353,7 +356,7 @@ def set_voice(request: Request, voice_name: str = Query(...)):
         return {"message": f"Voice set to {voice_name} successfully"}
     except Exception as e:
         print(f"Error setting voice: {str(e)}")
-        logging.error(f"Error setting voice: {str(e)}")
+        logger.error(f"Error setting voice: {str(e)}")
         return {"error": "Failed to set voice"}
 
 @app.post("/tts/preview")
@@ -395,7 +398,7 @@ async def preview_tts(request: Request):
                     preview_stream.play(on_audio_chunk=on_audio_chunk, muted=True)
                     audio_queue.put(None)
                 except Exception as e:
-                    logging.error(f"Error generating audio: {str(e)}")
+                    logger.error(f"Error generating audio: {str(e)}")
                     audio_queue.put(None)
             
             # 使用线程池执行器来运行同步代码
@@ -414,7 +417,7 @@ async def preview_tts(request: Request):
                 engine.set_voice(original_voice)
                 
     except Exception as e:
-        logging.error(f"Error in preview TTS: {str(e)}")
+        logger.error(f"Error in preview TTS: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -552,7 +555,7 @@ if __name__ == "__main__":
 
         except Exception as e:
             voices[_engine] = []
-            logging.error(f"Error retrieving voices for {_engine}: {str(e)}")
+            logger.error(f"Error retrieving voices for {_engine}: {str(e)}")
 
     _set_engine(START_ENGINE)
 

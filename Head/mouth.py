@@ -19,10 +19,7 @@ import toml
 from dotenv import load_dotenv
 from RealtimeTTS import TextToAudioStream
 from Head.gsv_stream import GSVStream
-import loguru
-import logging
-
-logger = loguru.logger
+from utils.log_manager import LogManager
 load_dotenv()
 
 azure_api_key = os.environ.get("AZURE_SPEECH_KEY")
@@ -39,6 +36,10 @@ class TTS_GSV():
     
     def __init__(self, on_character=None, on_audio_stream_start=None, 
                  on_text_stream_stop=None, on_text_stream_start=None, on_audio_stream_stop=None):
+        # Initialize logging
+        self.log_manager = LogManager()
+        self.logger = self.log_manager.get_logger('mouth')
+        
         self.on_character = on_character
         self.on_audio_stream_start = on_audio_stream_start
         self.on_audio_stream_stop = on_audio_stream_stop
@@ -62,6 +63,10 @@ class TTS_GSV():
 
 class TTS_realtime():
     def __init__(self, on_character=None, on_audio_stream_start=None, on_text_stream_stop=None, on_text_stream_start=None, on_audio_stream_stop=None):
+        # Initialize logging
+        self.log_manager = LogManager()
+        self.logger = self.log_manager.get_logger('mouth')
+        
         self.on_character = on_character
         self.on_audio_stream_start = on_audio_stream_start
         self.on_audio_stream_stop = on_audio_stream_stop

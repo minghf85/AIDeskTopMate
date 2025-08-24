@@ -1,0 +1,246 @@
+# 日志系统配置文件
+
+[logging.global]
+# 全局日志配置
+log_dir = "logs"
+max_total_size = "1 GB"  # 所有日志文件总大小限制
+cleanup_interval = "1 day"  # 清理检查间隔
+
+[logging.modules.default]
+# 默认模块配置
+level = "INFO"
+file_enabled = true
+console_enabled = true
+max_file_size = "10 MB"
+retention = "7 days"
+rotation = "1 day"
+format = "{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | {name}:{function}:{line} - {message}"
+enable_compression = true
+enable_json_format = false
+filter_keywords = []
+exclude_keywords = []
+
+[logging.modules.brain]
+# 大脑模块（AI推理）
+level = "INFO"
+file_enabled = true
+console_enabled = true
+file_path = "logs/brain_{time:YYYY-MM-DD}.log"
+max_file_size = "20 MB"
+retention = "14 days"
+rotation = "1 day"
+format = "{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | BRAIN | {function}:{line} - {message}"
+enable_compression = true
+enable_json_format = false
+filter_keywords = []
+exclude_keywords = ["token", "api_key"]
+
+[logging.modules.agent]
+# 智能体模块
+level = "INFO"
+file_enabled = true
+console_enabled = true
+file_path = "logs/agent_{time:YYYY-MM-DD}.log"
+max_file_size = "15 MB"
+retention = "10 days"
+rotation = "1 day"
+format = "{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | AGENT | {function}:{line} - {message}"
+enable_compression = true
+enable_json_format = false
+filter_keywords = []
+exclude_keywords = ["api_key", "token", "password"]
+
+[logging.modules.stt]
+# 语音识别模块
+level = "INFO"
+file_enabled = true
+console_enabled = true
+file_path = "logs/stt_{time:YYYY-MM-DD}.log"
+max_file_size = "10 MB"
+retention = "7 days"
+rotation = "1 day"
+format = "{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | STT | {function}:{line} - {message}"
+enable_compression = true
+enable_json_format = false
+filter_keywords = []
+exclude_keywords = []
+
+[logging.modules.tts]
+# 语音合成模块
+level = "INFO"
+file_enabled = true
+console_enabled = true
+file_path = "logs/tts_{time:YYYY-MM-DD}.log"
+max_file_size = "10 MB"
+retention = "7 days"
+rotation = "1 day"
+format = "{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | TTS | {function}:{line} - {message}"
+enable_compression = true
+enable_json_format = false
+filter_keywords = []
+exclude_keywords = []
+
+[logging.modules.ear]
+# 听觉模块（音频输入）
+level = "INFO"
+file_enabled = true
+console_enabled = true
+file_path = "logs/ear_{time:YYYY-MM-DD}.log"
+max_file_size = "10 MB"
+retention = "7 days"
+rotation = "1 day"
+format = "{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | EAR | {function}:{line} - {message}"
+enable_compression = true
+enable_json_format = false
+filter_keywords = []
+exclude_keywords = []
+
+[logging.modules.mouth]
+# 嘴部模块（音频输出）
+level = "INFO"
+file_enabled = true
+console_enabled = true
+file_path = "logs/mouth_{time:YYYY-MM-DD}.log"
+max_file_size = "10 MB"
+retention = "7 days"
+rotation = "1 day"
+format = "{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | MOUTH | {function}:{line} - {message}"
+enable_compression = true
+enable_json_format = false
+filter_keywords = []
+exclude_keywords = []
+
+[logging.modules.body]
+# 身体模块（Live2D显示）
+level = "INFO"
+file_enabled = true
+console_enabled = true
+file_path = "logs/body_{time:YYYY-MM-DD}.log"
+max_file_size = "10 MB"
+retention = "7 days"
+rotation = "1 day"
+format = "{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | BODY | {function}:{line} - {message}"
+enable_compression = true
+enable_json_format = false
+filter_keywords = []
+exclude_keywords = []
+
+[logging.modules.live2d]
+# Live2D渲染模块
+level = "WARNING"  # Live2D日志较多，只记录警告以上
+file_enabled = true
+console_enabled = false
+file_path = "logs/live2d_{time:YYYY-MM-DD}.log"
+max_file_size = "5 MB"
+retention = "3 days"
+rotation = "1 day"
+format = "{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | LIVE2D | {function}:{line} - {message}"
+enable_compression = true
+enable_json_format = false
+filter_keywords = []
+exclude_keywords = []
+
+[logging.modules.message]
+# 消息模块
+level = "INFO"
+file_enabled = true
+console_enabled = true
+file_path = "logs/message_{time:YYYY-MM-DD}.log"
+max_file_size = "10 MB"
+retention = "7 days"
+rotation = "1 day"
+format = "{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | MESSAGE | {function}:{line} - {message}"
+enable_compression = true
+enable_json_format = false
+filter_keywords = []
+exclude_keywords = []
+
+[logging.modules.ui]
+# UI模块
+level = "WARNING"  # UI事件较多，只记录警告以上
+file_enabled = true
+console_enabled = false
+file_path = "logs/ui_{time:YYYY-MM-DD}.log"
+max_file_size = "5 MB"
+retention = "3 days"
+rotation = "1 day"
+format = "{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | UI | {function}:{line} - {message}"
+enable_compression = true
+enable_json_format = false
+filter_keywords = []
+exclude_keywords = []
+
+[logging.modules.audio]
+# 音频处理模块
+level = "INFO"
+file_enabled = true
+console_enabled = true
+file_path = "logs/audio_{time:YYYY-MM-DD}.log"
+max_file_size = "10 MB"
+retention = "7 days"
+rotation = "1 day"
+format = "{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | AUDIO | {function}:{line} - {message}"
+enable_compression = true
+enable_json_format = false
+filter_keywords = []
+exclude_keywords = []
+
+[logging.modules.config]
+# 配置模块
+level = "INFO"
+file_enabled = true
+console_enabled = true
+file_path = "logs/config_{time:YYYY-MM-DD}.log"
+max_file_size = "5 MB"
+retention = "14 days"  # 配置变更记录保留更久
+rotation = "1 day"
+format = "{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | CONFIG | {function}:{line} - {message}"
+enable_compression = true
+enable_json_format = false
+filter_keywords = []
+exclude_keywords = ["password", "api_key", "token", "secret"]
+
+[logging.modules.performance]
+# 性能监控模块
+level = "INFO"
+file_enabled = true
+console_enabled = false
+file_path = "logs/performance_{time:YYYY-MM-DD}.log"
+max_file_size = "20 MB"
+retention = "30 days"  # 性能数据保留更久
+rotation = "1 day"
+format = "{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | PERF | {function}:{line} - {message}"
+enable_compression = true
+enable_json_format = true  # 性能数据使用JSON格式便于分析
+filter_keywords = []
+exclude_keywords = []
+
+[logging.modules.error]
+# 错误专用模块
+level = "ERROR"
+file_enabled = true
+console_enabled = true
+file_path = "logs/error_{time:YYYY-MM-DD}.log"
+max_file_size = "50 MB"
+retention = "30 days"  # 错误日志保留更久
+rotation = "1 day"
+format = "{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | ERROR | {name}:{function}:{line} - {message}"
+enable_compression = true
+enable_json_format = false
+filter_keywords = []
+exclude_keywords = []
+
+[logging.modules.debug]
+# 调试专用模块
+level = "DEBUG"
+file_enabled = true
+console_enabled = false  # 调试信息不在控制台显示
+file_path = "logs/debug_{time:YYYY-MM-DD}.log"
+max_file_size = "100 MB"
+retention = "3 days"  # 调试日志保留时间较短
+rotation = "6 hours"  # 更频繁的轮转
+format = "{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | DEBUG | {name}:{function}:{line} - {message}"
+enable_compression = true
+enable_json_format = false
+filter_keywords = []
+exclude_keywords = []

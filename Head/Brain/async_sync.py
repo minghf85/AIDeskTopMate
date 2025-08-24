@@ -3,7 +3,11 @@ import threading
 import time
 from collections import deque
 from PyQt6.QtCore import QObject, pyqtSignal, QTimer, QMetaObject, Qt
-from loguru import logger
+from utils.log_manager import LogManager
+
+# Initialize logging
+log_manager = LogManager()
+logger = log_manager.get_logger('async_sync')
 import sys
 
 
