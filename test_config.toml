@@ -1,6 +1,6 @@
 [tts]
 # 运行模式选项（取消注释需要使用的模式）
-base_url = "https://u73860-9642-cf05ea39.westb.seetacloud.com:8443/tts"
+base_url = ""
 # mode = "realtime"
 # play_device = 4  # 或者设置为你想要使用的输出设备索引
 save_audio = false

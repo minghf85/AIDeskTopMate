@@ -269,6 +269,7 @@ class Brain(QObject):
         self.logger.debug(f"show_character被调用: '{character}', sync_subtitle={self.sync_subtitle}, subtitle_sync存在={self.subtitle_sync is not None}")
         if self.sync_subtitle and self.subtitle_sync:
             # 将字符添加到字幕同步器（异步调用）
+            # 注意：这里只是添加字符到缓冲区，实际显示要等到音频开始播放
             self.async_loop.run_coroutine(self.subtitle_sync.add_character(character))
 
 
@@ -297,11 +298,11 @@ class Brain(QObject):
                 # 记录发送给AIFE的时间
                 send_to_aife_time = time.time()
                 
-                # 确保字幕同步器能够正确启动（特别是在模式2打断后的情况）
+                # 清理字幕同步器状态，但不启动播放（等待音频开始播放时再启动）
                 if self.sync_subtitle and self.subtitle_sync:
-                    # 使用重启方法确保状态完全清理
-                    self.async_loop.run_coroutine(self.subtitle_sync.restart_audio_playback())
-                    self.logger.debug("字幕同步器已重新启动")
+                    # 强制清理状态，不显示剩余字符，避免在音频播放前显示字符
+                    self.async_loop.run_coroutine(self.subtitle_sync.stop_audio_playback(force_clear=True))
+                    self.logger.debug("字幕同步器状态已强制清理，等待音频开始播放")
                 
                 self.logger.info(f"开始处理: {text}")
                 

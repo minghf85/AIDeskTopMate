@@ -2,7 +2,7 @@ import asyncio
 import threading
 import time
 from collections import deque
-from PyQt6.QtCore import QObject, pyqtSignal, QTimer, QMetaObject, Qt
+from PyQt6.QtCore import QObject, pyqtSignal, QTimer, QMetaObject, Qt, pyqtSlot
 from utils.log_manager import LogManager
 
 # Initialize logging
@@ -32,19 +32,23 @@ class AsyncSubtitleSync(QObject):
         self.lock = asyncio.Lock()
         self.display_index = 0  # 当前应该显示的字符索引
         self._running = False
+        self._restarting = False  # 重启状态标志
     
     async def restart_audio_playback(self):
-        """重启音频播放（先停止再启动，确保状态清理）"""
-        logger.debug("重启字幕同步器")
-        # 保存当前文本，避免在重启时丢失
-        saved_text = self.current_text
+        """重启音频播放（完全清理状态，用于新对话）"""
+        logger.debug("重启字幕同步器 - 完全清理状态")
+        # 设置重启标志
+        self._restarting = True
         await self.stop_audio_playback()
-        # 恢复文本内容
-        self.current_text = saved_text
+        # 完全清空所有状态，为新对话做准备
+        self.current_text = ""
+        self.display_index = 0
         # 稍微等待确保停止操作完成
         await asyncio.sleep(0.01)
         await self.start_audio_playback()
-        logger.debug(f"字幕同步器重启完成，恢复文本长度: {len(self.current_text)}")
+        # 清除重启标志
+        self._restarting = False
+        logger.debug("字幕同步器重启完成 - 状态已完全清理")
     
     async def start_audio_playback(self):
         """标记音频开始播放"""
@@ -52,29 +56,35 @@ class AsyncSubtitleSync(QObject):
             self.audio_start_time = time.time() * 1000  # 转换为毫秒
             self.character_buffer.clear()
             # 不清空current_text，因为字符已经通过add_character添加了
-            self.display_index = 0
+            # 只有在非重启情况下才重置display_index
+            if not self._restarting:
+                self.display_index = 0
             self._running = True
             
-            logger.debug(f"准备启动定时器: isActive={self.subtitle_timer.isActive()}, interval={self.subtitle_timer.interval()}, text_length={len(self.current_text)}")
+            logger.debug(f"准备启动定时器: isActive={self.subtitle_timer.isActive()}, interval={self.subtitle_timer.interval()}, text_length={len(self.current_text)}, display_index={self.display_index}")
             if not self.subtitle_timer.isActive():
                 # 使用QMetaObject.invokeMethod确保在主线程中启动定时器
                 QMetaObject.invokeMethod(self.subtitle_timer, "start", Qt.ConnectionType.QueuedConnection)
                 logger.debug("已请求在主线程中启动定时器")
-                # 立即触发一次显示，避免等待第一个定时器间隔
-                QMetaObject.invokeMethod(self, "_process_subtitle_buffer", Qt.ConnectionType.QueuedConnection)
+                # 移除立即触发，让字符显示完全由定时器控制，确保与音频播放同步
             logger.debug("音频播放开始，字幕同步启动")
     
-    async def stop_audio_playback(self):
-        """停止音频播放"""
+    async def stop_audio_playback(self, force_clear=False):
+        """停止音频播放
+        
+        Args:
+            force_clear: 是否强制清理状态而不显示剩余字符
+        """
         async with self.lock:
-            # 先显示所有剩余字符
-            remaining_chars = len(self.current_text) - self.display_index
-            if remaining_chars > 0:
-                logger.debug(f"音频停止前显示剩余 {remaining_chars} 个字符")
-                for i in range(self.display_index, len(self.current_text)):
-                    char = self.current_text[i]
-                    self.show_character.emit(char)
-                    logger.debug(f"显示剩余字符: '{char}' (索引: {i})")
+            # 只有在音频正常结束且非重启状态下才显示剩余字符
+            if not self._restarting and not force_clear and self.audio_start_time is not None:
+                remaining_chars = len(self.current_text) - self.display_index
+                if remaining_chars > 0:
+                    logger.debug(f"音频停止前显示剩余 {remaining_chars} 个字符")
+                    for i in range(self.display_index, len(self.current_text)):
+                        char = self.current_text[i]
+                        self.show_character.emit(char)
+                        logger.debug(f"显示剩余字符: '{char}' (索引: {i})")
             
             self._running = False
             # 使用QMetaObject.invokeMethod确保在主线程中停止定时器
@@ -82,16 +92,20 @@ class AsyncSubtitleSync(QObject):
                 QMetaObject.invokeMethod(self.subtitle_timer, "stop", Qt.ConnectionType.QueuedConnection)
                 logger.debug("已请求在主线程中停止定时器")
             self.character_buffer.clear()
-            self.current_text = ""
-            self.display_index = 0
+            
+            # 清空文本和索引（除非是重启状态）
+            if not self._restarting:
+                self.current_text = ""
+                self.display_index = 0
+            
             self.audio_start_time = None
-            logger.debug("音频播放停止，字幕同步停止，已清理所有状态")
+            logger.debug(f"音频播放停止，字幕同步停止，重启状态: {self._restarting}, 强制清理: {force_clear}")
     
     async def add_character(self, character):
         """添加字符（来自on_character回调）"""
         async with self.lock:
             self.current_text += character
-            logger.debug(f"添加字符: '{character}', 当前文本长度: {len(self.current_text)}, _running={self._running}")
+            logger.debug(f"添加字符: '{character}', 当前文本长度: {len(self.current_text)}, display_index: {self.display_index}, _running={self._running}")
     
     async def add_word_timing(self, timing_info):
         """添加单词时间信息（来自on_word回调）- 已弃用，保留接口兼容性"""
@@ -100,6 +114,7 @@ class AsyncSubtitleSync(QObject):
     
 
     
+    @pyqtSlot()
     def _process_subtitle_buffer(self):
         """处理字幕缓冲区 - 匀速显示字符"""
         # logger.debug(f"定时器触发: audio_start_time={self.audio_start_time}, _running={self._running}, display_index={self.display_index}, text_length={len(self.current_text)}")

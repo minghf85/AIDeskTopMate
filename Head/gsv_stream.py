@@ -13,8 +13,6 @@ import queue
 import struct
 import time
 from typing import Union, Iterator, AsyncGenerator
-
-logger = loguru.logger
 config_json = toml.load("config.toml")
 
 # 全局配置
@@ -41,7 +39,7 @@ class GSVStream:
         self._input_data = None
         self._text_stream_started = False  # 文本流是否已开始
         self._audio_started = False  # 音频是否已开始播放
-        self._character_buffer = []  # 字符缓冲区，在音频开始前暂存字符
+
 
         
         # 配置
@@ -180,14 +178,11 @@ class GSVStream:
         """处理文本迭代器"""
         for text_chunk in text_iterator:
             if text_chunk:
-                # 按字符处理，如果音频已开始则立即触发回调，否则存储到缓冲区
+                # 按字符处理，从一开始就触发回调，不等音频开始
                 for char in text_chunk:
                     self._current_text += char
-                    if self._audio_started and self.on_character:
+                    if self.on_character:
                         self.on_character(char)
-                    elif not self._audio_started:
-                        # 音频还未开始，将字符存储到缓冲区
-                        self._character_buffer.append(char)
                     yield char
                     await asyncio.sleep(0.001)
             await asyncio.sleep(0.001)
@@ -312,7 +307,6 @@ class GSVStream:
         # 设置播放状态和重置状态变量
         self._is_playing = True
         self._audio_started = False
-        self._character_buffer.clear()
         
         # 初始化音频流，使用优化的参数以减少爆破音
         self.stream = self.p.open(
@@ -375,8 +369,6 @@ class GSVStream:
                             if self.on_audio_stream_start:
                                 self.on_audio_stream_start()
                             self._audio_started = True
-                            # 触发缓冲区中的字符回调
-                            self._trigger_buffered_characters()
                             logger.info("触发音频流开始回调 - 开始播放真正的音频")
                         
                         # 播放缓冲区中的数据
@@ -403,8 +395,6 @@ class GSVStream:
                                 if self.on_audio_stream_start:
                                     self.on_audio_stream_start()
                                 self._audio_started = True
-                                # 触发缓冲区中的字符回调
-                                self._trigger_buffered_characters()
                                 logger.info("触发音频流开始回调 - 开始播放真正的音频（队列空时）")
                         
                         self.stream.write(audio_buffer[:play_size])
@@ -433,13 +423,7 @@ class GSVStream:
                 self.on_audio_stream_stop()
             logger.info(f"音频播放完成，共播放{chunk_count}个音频块，播放状态和RMS已重置")
     
-    def _trigger_buffered_characters(self):
-        """触发缓冲区中的字符回调"""
-        if self.on_character and self._character_buffer:
-            logger.info(f"触发缓冲区中的{len(self._character_buffer)}个字符")
-            for char in self._character_buffer:
-                self.on_character(char)
-            self._character_buffer.clear()
+
     
     def _update_rms(self, audio_chunk):
         """更新RMS值"""
@@ -473,7 +457,6 @@ class GSVStream:
         self._is_playing = False
         # 重置状态变量
         self._audio_started = False
-        self._character_buffer.clear()
         # 重置RMS值
         self._current_rms = 0.0
         self.last_mouth_value = 0.0

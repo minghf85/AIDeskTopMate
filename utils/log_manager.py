@@ -37,7 +37,7 @@ class LogConfig:
     max_file_size: str = "10 MB"  # 单个日志文件最大大小
     retention: str = "7 days"  # 日志保留时间
     rotation: str = "1 day"  # 日志轮转周期
-    format: str = "{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | {name}:{function}:{line} - {message}"
+    format: str = "<green>{time:YYYY-MM-DD HH:mm:ss}</green> <light-white>|</light-white> <level>{level}</level> <light-white>|</light-white> <cyan>{name}:{function}:{line}</cyan> <light-white>-</light-white> {message}"
     filter_keywords: List[str] = field(default_factory=list)
     exclude_keywords: List[str] = field(default_factory=list)
     enable_compression: bool = True
@@ -67,7 +67,7 @@ class LogFilter:
     
     def should_log(self, record) -> bool:
         """判断是否应该记录此日志"""
-        message = record.get("message", "")
+        message = getattr(record, "message", "")
         
         # 检查排除关键词
         if self.exclude_keywords:
@@ -106,9 +106,9 @@ class LogMonitor:
     
     def on_log(self, record):
         """处理日志记录"""
-        module_name = record.get("name", "unknown")
-        level = record.get("level", {}).get("name", "INFO")
-        message = record.get("message", "")
+        module_name = getattr(record, "name", "unknown")
+        level = getattr(record, "level", {}).name if hasattr(record, "level") and hasattr(record.level, "name") else "INFO"
+        message = getattr(record, "message", "")
         timestamp = datetime.now()
         
         with self.lock:
@@ -190,9 +190,8 @@ class LogManager:
         
         # 移除默认的loguru处理器
         logger.remove()
-        
-        # 设置默认配置
-        self._setup_default_config()
+        self.load_config_from_file("logging_config.toml")
+        # 不再自动设置默认配置，由用户手动加载配置文件或调用_setup_default_config()
     
     def _setup_default_config(self):
         """设置默认配置"""
@@ -223,19 +222,31 @@ class LogManager:
         
         # 创建过滤函数
         def log_filter(record):
-            record_module = record.get("name", "default")
-            if record_module == module_name or module_name == "default":
+            # 优先检查绑定的模块名
+            bound_module = getattr(record.get("extra", {}), "name", None) or record.get("extra", {}).get("name")
+            record_module = bound_module or getattr(record, "name", "default")
+            
+            # 只有当记录的模块名完全匹配时才处理
+            if record_module == module_name:
                 return self.filters[module_name].should_log(record)
             return False
         
         # 控制台处理器
         if config.console_enabled:
+            # 在Windows下启用ANSI颜色支持
+            if os.name == 'nt':
+                os.system('color')
+                import colorama
+                colorama.init()
+            
             handler_id = logger.add(
                 sys.stdout,
                 format=config.format,
                 level=config.level.value,
                 filter=log_filter,
-                colorize=True
+                colorize=True,
+                backtrace=True,
+                diagnose=True
             )
             self.handler_ids[module_name].append(handler_id)
         
@@ -380,7 +391,7 @@ class LogManager:
                         max_file_size=module_config.get('max_file_size', '10 MB'),
                         retention=module_config.get('retention', '7 days'),
                         rotation=module_config.get('rotation', '1 day'),
-                        format=module_config.get('format', config.format),
+                        format=module_config.get('format', "<green>{time:YYYY-MM-DD HH:mm:ss}</green> <light-white>|</light-white> <level>{level}</level> <light-white>|</light-white> <cyan>{name}:{function}:{line}</cyan> <light-white>-</light-white> {message}"),
                         filter_keywords=module_config.get('filter_keywords', []),
                         exclude_keywords=module_config.get('exclude_keywords', []),
                         enable_compression=module_config.get('enable_compression', True),

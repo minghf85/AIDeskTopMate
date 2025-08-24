@@ -139,7 +139,6 @@ class AIFE:
                     log="Automatically added ShouldRespond: Default response required"
                 ))
             
-            self.logger.info(f"Planned action sequence: {[a.tool for a in actions]}")
             return actions if actions else [
                 AgentAction(
                     tool="ShouldRespond",

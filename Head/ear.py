@@ -98,7 +98,7 @@ class ASR(QThread):
             # 队列满，丢弃数据
             pass
         except Exception as e:
-            logger.error(f"音频回调错误: {e}")
+            self.logger.error(f"音频回调错误: {e}")
         return (None, pyaudio.paContinue)
 
     def get_audio_data(self):
@@ -127,10 +127,10 @@ class ASR(QThread):
                     try:
                         await self.ws.send(audio_data)
                     except websockets.exceptions.ConnectionClosed:
-                        logger.warning("WebSocket 连接已关闭")
+                        self.logger.warning("WebSocket 连接已关闭")
                         break
                     except Exception as e:
-                        logger.error(f"发送音频数据错误: {e}")
+                        self.logger.error(f"发送音频数据错误: {e}")
                         break
                 
                 # 使用适中的延迟
@@ -246,10 +246,10 @@ class ASR(QThread):
                 input_device_index=config.asr.input_device_index if hasattr(config.asr, 'input_device_index') else None
             )
             
-            logger.info(f"音频流已启动 - 采样率: {self.sample_rate}, 通道: {self.channels}, 块大小: {self.chunk_size}")
+            self.logger.info(f"音频流已启动 - 采样率: {self.sample_rate}, 通道: {self.channels}, 块大小: {self.chunk_size}")
             
         except Exception as e:
-            logger.error(f"设置音频流失败: {e}")
+            self.logger.error(f"设置音频流失败: {e}")
             raise e
 
     def run(self):
@@ -266,14 +266,14 @@ class ASR(QThread):
             self.event_loop.run_until_complete(self.start_websocket_session())
             
         except Exception as e:
-            logger.error(f"ASR 运行错误: {e}")
+            self.logger.error(f"ASR 运行错误: {e}")
             self.errorOccurred.emit(f"运行错误: {e}")
         finally:
             self.cleanup()
 
     def stop_stream(self):
         """停止音频流"""
-        logger.info("正在闭麦")
+        self.logger.info("正在闭麦")
         if self.audio_stream:
             self.audio_stream.stop_stream()
             self.audio_stream.close()
@@ -281,13 +281,13 @@ class ASR(QThread):
 
     def resume_stream(self):
         """恢复音频流"""
-        logger.info("正在开启麦克风")
+        self.logger.info("正在开启麦克风")
         if self.audio_stream is None:
             self.setup_audio_stream()
 
     def stop(self):
         """停止识别"""
-        logger.info("正在停止 ASR...")
+        self.logger.info("正在停止 ASR...")
         self.running = False
         self.should_stop.set()
         
@@ -308,18 +308,18 @@ class ASR(QThread):
                 self.audio_stream.close()
                 self.audio_stream = None
             except Exception as e:
-                logger.error(f"关闭音频流错误: {e}")
+                self.logger.error(f"关闭音频流错误: {e}")
                 
         if self.pyaudio_instance:
             try:
                 self.pyaudio_instance.terminate()
                 self.pyaudio_instance = None
             except Exception as e:
-                logger.error(f"终止 PyAudio 错误: {e}")
+                self.logger.error(f"终止 PyAudio 错误: {e}")
 
     def cleanup(self):
         """清理资源"""
-        logger.info("正在清理 ASR 资源...")
+        self.logger.info("正在清理 ASR 资源...")
         
         # 重置状态
         with QMutexLocker(self.mutex):
@@ -348,15 +348,15 @@ class ASR(QThread):
                 self.event_loop.close()
                 self.event_loop = None
             except Exception as e:
-                logger.error(f"关闭事件循环错误: {e}")
+                self.logger.error(f"关闭事件循环错误: {e}")
         
-        logger.info("ASR 资源清理完成")
+        self.logger.info("ASR 资源清理完成")
 
     def reset_state(self):
         """重置听音和转录状态"""
         with QMutexLocker(self.mutex):
             self.is_hearing = False
-        logger.info("ASR 状态已重置")
+        self.logger.info("ASR 状态已重置")
 
     def get_status(self):
         """获取当前状态"""
@@ -373,7 +373,7 @@ class ASR(QThread):
         }
 
 def detect_voice():
-    logger.info("检测到语音活动，开始识别...")
+    print("检测到语音活动，开始识别...")
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)

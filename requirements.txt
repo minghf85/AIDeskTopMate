@@ -28,6 +28,7 @@ funasr
 soundfile
 modelscope
 loguru
+colorama
 RealtimeTTS[azure,edge,kokoro]
 # 新增的依赖
 dotmap
