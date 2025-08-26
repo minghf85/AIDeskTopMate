@@ -271,8 +271,6 @@ class Brain(QObject):
             # 将字符添加到字幕同步器（异步调用）
             # 注意：这里只是添加字符到缓冲区，实际显示要等到音频开始播放
             self.async_loop.run_coroutine(self.subtitle_sync.add_character(character))
-
-
     
     def _show_character_delayed(self, character: str):
         """实际显示字符的方法 - 仅在同步模式下使用"""

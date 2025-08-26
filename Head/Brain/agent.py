@@ -57,6 +57,7 @@ class AIFE:
         # Basic components
         self.config = agent_config
         self.llm = self._initialize_llm(self.config.llm.platform, self.config.llm.llm_config)
+        self.user = self.config.user
         self.stream_chat_callback = stream_chat_callback
         self.short_term_memory = ChatMessageHistory()
         self.short_term_memory.clear()
@@ -156,7 +157,7 @@ class AIFE:
             tools.append(Tool(
                 name="SetExpression",
                 func=lambda x: asyncio.run(self._set_expression(x)),
-                description=f"Set Live2D expression. Available expressions: {', '.join(self.config.live2d.available_expression.keys())}"
+                description=f"Set Live2D expression. Format: expression. Available expressions: {', '.join(self.config.live2d.available_expression.keys())}"
             ))
         
         # Motion start tool
@@ -302,7 +303,8 @@ class AIFE:
             if '_' not in motion_input:
                 return "✗ Invalid motion format"
             
-            group, index_str = motion_input.split('_', 1)
+            index_str = motion_input[-1]# 取最后一位的数字
+            group = motion_input[:-1]
             index = int(index_str)
             
             # Validate motion group
@@ -477,7 +479,7 @@ class AIFE:
                                     "result": action["output"]
                                 })
                     
-                    context_input = f"User request: {user_input}\nExecuted actions: {filtered_actions}\nPlease respond naturally to this."
+                    context_input = f"{self.user}: {user_input}\nYou have done these: {filtered_actions}\nRespond naturally"
 
                     # Create temporary messages for streaming generation
                     temp_messages = self.short_term_memory.messages.copy()
