@@ -304,7 +304,7 @@ class AIFE:
                 return "✗ Invalid motion format"
             
             index_str = motion_input[-1]# 取最后一位的数字
-            group = motion_input[:-1]
+            group = motion_input[:-2]
             index = int(index_str)
             
             # Validate motion group
