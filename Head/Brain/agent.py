@@ -28,6 +28,7 @@ from langchain.schema import BaseMemory
 from langchain_openai import ChatOpenAI
 from langchain_ollama import ChatOllama
 from langchain_anthropic import ChatAnthropic
+from mem import MemoryManager
 from langchain.agents import Agent, AgentExecutor, Tool, create_react_agent, BaseMultiActionAgent
 from langchain.schema import AgentAction, AgentFinish
 from langchain.tools import BaseTool
@@ -59,7 +60,10 @@ class AIFE:
         self.llm = self._initialize_llm(self.config.llm.platform, self.config.llm.llm_config)
         self.user = self.config.user
         self.stream_chat_callback = stream_chat_callback
-        self.short_term_memory = ChatMessageHistory()
+        # 初始化记忆管理器
+        self.memory_manager = MemoryManager()
+        # 保持向后兼容性
+        self.short_term_memory = self.memory_manager.short_term_memory
         self.short_term_memory.clear()
         self.persona = str(self.config.persona)
         self.short_term_memory.add_message(SystemMessage(content=self.persona))
@@ -506,15 +510,33 @@ class AIFE:
     async def common_chat(self, user_input: str) -> AsyncGenerator[str, None]:
         """Asynchronous streaming chat generator"""
         try:
-            # Add to short-term memory
-            self.short_term_memory.add_user_message(HumanMessage(content=user_input))
+            # 搜索相关记忆作为上下文
+            memory_context = self.memory_manager.get_memory_context(user_input)
+            
+            # 添加用户消息到记忆系统
+            self.memory_manager.add_message(HumanMessage(content=user_input))
+            
+            # 获取对话历史
+            messages = self.memory_manager.get_recent_messages(10)
+            
+            # 如果有记忆上下文，在最新消息前插入上下文
+            if memory_context.strip():
+                context_msg = SystemMessage(content=f"相关记忆上下文:\n{memory_context}")
+                messages = [context_msg] + messages
 
-            async for chunk in self.llm.astream(self.short_term_memory.messages):
+            full_response = ""
+            async for chunk in self.llm.astream(messages):
                 if isinstance(chunk, AIMessageChunk):
                     if chunk.content and isinstance(chunk.content, str):
+                        full_response += chunk.content
                         if self.stream_chat_callback:
                             await self._safe_call_callback(chunk.content)
                         yield str(chunk.content)
+            
+            # 计算回复重要性并添加到记忆系统
+            if full_response:
+                importance = self._calculate_response_importance(user_input, full_response)
+                self.memory_manager.add_message(AIMessage(content=full_response), importance)
                 
         except Exception as e:
             error_msg = f"Chat processing failed: {str(e)}"
@@ -536,8 +558,31 @@ class AIFE:
 
     # ============ 系统状态查询 ============
     
+    def _calculate_response_importance(self, user_input: str, response: str) -> float:
+        """计算回复的重要性分数"""
+        # 简单的重要性计算逻辑
+        importance = 0.5  # 基础重要性
+        
+        # 根据用户输入长度调整
+        if len(user_input) > 50:
+            importance += 0.1
+            
+        # 根据回复长度调整
+        if len(response) > 100:
+            importance += 0.1
+            
+        # 检查是否包含重要关键词
+        important_keywords = ['记住', '重要', '提醒', '不要忘记', '记录']
+        for keyword in important_keywords:
+            if keyword in user_input or keyword in response:
+                importance += 0.2
+                break
+                
+        return min(importance, 1.0)
+    
     def get_status_summary(self) -> Dict[str, Any]:
         """获取状态摘要"""
         return {
+            "memory_stats": self.memory_manager.get_memory_stats() if hasattr(self, 'memory_manager') else {}
         }
 
