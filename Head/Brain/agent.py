@@ -28,7 +28,7 @@ from langchain.schema import BaseMemory
 from langchain_openai import ChatOpenAI
 from langchain_ollama import ChatOllama
 from langchain_anthropic import ChatAnthropic
-from mem import MemoryManager
+from .mem import MemoryManager
 from langchain.agents import Agent, AgentExecutor, Tool, create_react_agent, BaseMultiActionAgent
 from langchain.schema import AgentAction, AgentFinish
 from langchain.tools import BaseTool
