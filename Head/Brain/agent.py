@@ -1,13 +1,6 @@
 from typing import Dict, Any, List, Optional, Callable, Generator, Union, Tuple, AsyncGenerator
-import logging
-import json
 from utils.log_manager import LogManager
-import time
-from aiostream import stream
-from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
 from datetime import datetime
-from enum import Enum
 from dotmap import DotMap
 from Body.tlw import Live2DSignals
 import toml
@@ -19,28 +12,19 @@ config = DotMap(toml.load("config.toml"))
 
 # 导入langchain相关组件
 from langchain_core.messages import HumanMessage, AIMessage, AIMessageChunk, SystemMessage
-from langchain.chains import LLMChain
 from langchain.prompts import PromptTemplate, ChatPromptTemplate
-from langchain_community.chat_message_histories import ChatMessageHistory
 from langchain_community.tools import WikipediaQueryRun
 from langchain_community.utilities import WikipediaAPIWrapper
-from langchain.schema import BaseMemory
 from langchain_openai import ChatOpenAI
 from langchain_ollama import ChatOllama
 from langchain_anthropic import ChatAnthropic
 from .mem import MemoryManager
-from langchain.agents import Agent, AgentExecutor, Tool, create_react_agent, BaseMultiActionAgent
+from langchain.agents import AgentExecutor, Tool
 from langchain.schema import AgentAction, AgentFinish
-from langchain.tools import BaseTool
-from langchain_core.callbacks import BaseCallbackHandler, AsyncCallbackHandler
-from langchain_community.vectorstores import FAISS
-from langchain_openai import OpenAIEmbeddings
-from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.agents.agent import RunnableMultiActionAgent
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.runnables import Runnable, RunnablePassthrough
 from langchain_core.messages import BaseMessage
-from langchain_core.agents import AgentAction as CoreAgentAction, AgentFinish as CoreAgentFinish
 import re
 
 
@@ -170,8 +154,8 @@ class AIFE:
         if "get_current_time" in self.config.actions.enabled:
             tools.append(Tool(
                 name="GetCurrentTime",
-                func=lambda: asyncio.run(self._get_current_time()),  # 无参lambda
-                description=f"Get current time."
+                func=self._get_current_time,
+                description=f"Get current time.Format: Yes"
             ))
         # Expression setting tool
         if "set_expression" in self.config.actions.enabled:
@@ -340,8 +324,8 @@ class AIFE:
             self.logger.error(f"Memory recall failed: {e}")
             return f"✗ Memory recall failed: {str(e)}"
 
-    async def _get_current_time(self) -> str:
-        """Get current time"""
+    def _get_current_time(self, *args, **kwargs) -> str:
+        """Get current time - ignores all input parameters"""
         return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     async def _set_expression(self, expression: str) -> str:
         """Set Live2D expression"""
