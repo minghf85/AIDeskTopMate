@@ -83,12 +83,26 @@ class Brain(QObject):
         
         self.wakeup()
         
+        # 注册程序退出时的清理函数
+        import atexit
+        atexit.register(self.cleanup)
+        
         self.received_first_chunk = False
         # 添加延迟计算相关的时间戳
         self.speech_detect_time = None  # 检测到说话的时间
         self.transcription_complete_time = None  # 转录完成的时间
         self.aife_response_time = None  # AIFE响应的时间
         self.audio_start_time = None  # 音频开始播放的时间
+
+    def cleanup(self):
+        """程序退出时的清理工作"""
+        try:
+            if self.agent and hasattr(self.agent, 'memory_manager'):
+                self.logger.info("正在保存记忆...")
+                self.agent.memory_manager.save_all_memories()
+                self.logger.info("记忆保存完成")
+        except Exception as e:
+            self.logger.error(f"清理过程中发生错误: {e}")
 
     def wakeup(self):
         """唤醒大脑，从头往下激活"""
@@ -195,8 +209,9 @@ class Brain(QObject):
             if interrupted_text.strip():  # 只有当有实际内容时才添加
                 interrupted_response = f"{interrupted_text}|Be Interrupted|"
                 if self.agent and hasattr(self.agent, 'memory_manager'):
-                    # 使用新的记忆管理器，标记为低重要性
-                    self.agent.memory_manager.add_message(AIMessage(content=interrupted_response), importance=0.3)
+                    # 使用新的记忆管理器添加到短期记忆
+                    self.agent.memory_manager.short_term_memory.add_message(AIMessage(content=interrupted_response))
+                    self.agent.memory_manager.save_ChatHistory()
                     self.logger.info(f"添加被打断的响应到记忆: {interrupted_response}")
                 elif self.agent:
                     # 向后兼容
@@ -250,9 +265,9 @@ class Brain(QObject):
         # 正常完成的响应添加到记忆中
         if self.current_response and self.agent:
             if hasattr(self.agent, 'memory_manager'):
-                # 使用新的记忆管理器，计算重要性
-                importance = self._calculate_stream_response_importance(self.current_response)
-                self.agent.memory_manager.add_message(AIMessage(content=self.current_response), importance)
+                # 使用新的记忆管理器添加到短期记忆
+                self.agent.memory_manager.short_term_memory.add_message(AIMessage(content=self.current_response))
+                self.agent.memory_manager.save_ChatHistory()
                 self.logger.info(f"添加完整响应到记忆: {self.current_response}")
             else:
                 # 向后兼容
@@ -345,8 +360,8 @@ class Brain(QObject):
                     # 非流式情况下直接添加到记忆
                     if self.agent and full_response:
                         if hasattr(self.agent, 'memory_manager'):
-                            importance = self._calculate_stream_response_importance(full_response)
-                            self.agent.memory_manager.add_message(AIMessage(content=full_response), importance)
+                            # 使用新的记忆管理器添加到短期记忆
+                            self.agent.memory_manager.short_term_memory.add_message(AIMessage(content=full_response))
                             self.logger.info(f"添加非流式响应到记忆: {full_response}")
                         else:
                             # 向后兼容
@@ -664,40 +679,7 @@ class Brain(QObject):
             self.async_loop.run_coroutine(self.subtitle_sync.stop_audio_playback())
             self.logger.debug("字幕同步已停止")
     
-    def _calculate_stream_response_importance(self, response: str) -> float:
-        """计算流式响应的重要性分数
-        
-        Args:
-            response: AI响应内容
-            
-        Returns:
-            重要性分数 (0.0-1.0)
-        """
-        if not response or not response.strip():
-            return 0.1
-        
-        importance = 0.5  # 基础重要性
-        
-        # 被打断的响应重要性较低
-        if "|Be Interrupted|" in response:
-            importance = 0.3
-        else:
-            # 根据响应长度调整重要性
-            if len(response) > 100:
-                importance += 0.2
-            elif len(response) < 20:
-                importance -= 0.1
-            
-            # 包含问号的响应可能更重要（互动性强）
-            if "?" in response or "？" in response:
-                importance += 0.1
-            
-            # 包含特定关键词的响应更重要
-            important_keywords = ["重要", "注意", "警告", "错误", "成功", "完成"]
-            if any(keyword in response for keyword in important_keywords):
-                importance += 0.2
-        
-        return min(max(importance, 0.1), 1.0)  # 限制在0.1-1.0范围内
+
 
 if __name__ == "__main__":
     brain = Brain()

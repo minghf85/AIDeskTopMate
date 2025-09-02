@@ -60,8 +60,8 @@ class AIFE:
         self.llm = self._initialize_llm(self.config.llm.platform, self.config.llm.llm_config)
         self.user = self.config.user
         self.stream_chat_callback = stream_chat_callback
-        # 初始化记忆管理器
-        self.memory_manager = MemoryManager()
+        # 初始化记忆管理器，传入agent名称和用户信息
+        self.memory_manager = MemoryManager(agent_name=self.config.name, agent_user=self.user)
         # 保持向后兼容性
         self.short_term_memory = self.memory_manager.short_term_memory
         self.short_term_memory.clear()
@@ -155,7 +155,24 @@ class AIFE:
     def _create_tools(self):
         """Create tool list"""
         tools = []
-        
+        if "remember" in self.config.actions.enabled:
+            tools.append(Tool(
+                name="Remember",
+                func=lambda x: asyncio.run(self._remember_something(x)),
+                description="Store important information into long-term memory. Use this to remember user preferences, important facts, personal information, and other content that needs to be preserved long-term. Input format: content to remember. Example: User prefers coffee over tea"
+            ))
+        if "recall" in self.config.actions.enabled:
+            tools.append(Tool(
+                name="Recall",
+                func=lambda x: asyncio.run(self._recall_query(x)),
+                description="Retrieve relevant information from long-term memory. Use this when you need to recall previously stored information or answer questions that require historical memory. Input format: query keywords or question. Example: user's beverage preferences"
+            ))
+        if "get_current_time" in self.config.actions.enabled:
+            tools.append(Tool(
+                name="GetCurrentTime",
+                func=lambda: asyncio.run(self._get_current_time()),  # 无参lambda
+                description=f"Get current time."
+            ))
         # Expression setting tool
         if "set_expression" in self.config.actions.enabled:
             tools.append(Tool(
@@ -273,10 +290,63 @@ class AIFE:
                    if f.endswith(('.mp3', '.wav', '.ogg'))]
         return []
     
+    async def _remember_something(self, something: str) -> str:
+        """记住某些信息到长期记忆中"""
+        something = something.strip().split('\n')[0]
+        self.logger.info(f"_remember_something input parameter {len(something)}: {something}")
+        
+        try:
+            # 使用长期记忆管理器添加记忆
+            self.memory_manager.long_term_memory.add_memory_with_user(
+                memory=something,
+                user=self.user
+            )
+            self.logger.info(f"Successfully remembered: {something}")
+            return f"✓ I have remembered: {something}"
+        except Exception as e:
+            self.logger.error(f"Memory storage failed: {e}")
+            return f"✗ Memory storage failed: {str(e)}"
+    
+    async def _recall_query(self, query: str) -> str:
+        """从长期记忆中回忆信息"""
+        query = query.strip().split('\n')[0]
+        self.logger.info(f"_recall_query input parameter {len(query)}: {query}")
+        
+        try:
+            # 从长期记忆中搜索相关信息
+            results = self.memory_manager.long_term_memory.recall_memory_with_user(
+                query=query,
+                user=self.user,
+                top_k=2
+            )
+            
+            if results:
+                # 格式化搜索结果
+                recalled_info = []
+                for result in results:
+                    memory = result["content"]  # 修复键名：从'memory'改为'content'
+                    score = result.get("similarity", 0)  # 修复键名：从'score'改为'similarity'
+                    time_info = result["metadata"].get("time", "Unknown time")
+                    recalled_info.append(f"[{time_info}] {memory} (similarity: {score:.3f})")
+                
+                response = f"I recalled the following information:\n" + "\n".join(recalled_info)
+                self.logger.info(f"Successfully recalled: {len(results)} records")
+                return response
+            else:
+                self.logger.info(f"No relevant memory found: {query}")
+                return f"Sorry, I couldn't find any relevant memories about '{query}'."
+                
+        except Exception as e:
+            self.logger.error(f"Memory recall failed: {e}")
+            return f"✗ Memory recall failed: {str(e)}"
+
+    async def _get_current_time(self) -> str:
+        """Get current time"""
+        return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     async def _set_expression(self, expression: str) -> str:
         """Set Live2D expression"""
         # Clean input, keep only the first line or word
-        expression = expression.strip().split('\n')[0].split()[0]
+        expression = expression.strip().split('\n')[0].split()[-1]
         
         try:
             if expression in self.config.live2d.available_expression:
@@ -477,20 +547,19 @@ class AIFE:
                     filtered_actions = []
                     for action in self.executed_actions:
                         if action["name"] != "ShouldRespond":
-                            if action.get("output", "").startswith("✓"):
+                            if action.get("output", ""):
                                 filtered_actions.append({
                                     "name": action["name"],
                                     "result": action["output"]
                                 })
                     
                     context_input = f"{self.user}: {user_input}\nYou have done these: {filtered_actions}\nRespond naturally"
-
+                    self.logger.info(f"context_input: {context_input}")
                     # Create temporary messages for streaming generation
-                    temp_messages = self.short_term_memory.messages.copy()
-                    temp_messages.append(HumanMessage(content=context_input))
+                    self.short_term_memory.add_message(HumanMessage(content=context_input))
                     
                     # Use messages with action descriptions for streaming conversation
-                    async for chunk in self.llm.astream(temp_messages):
+                    async for chunk in self.llm.astream(self.short_term_memory.messages):
                         if isinstance(chunk, AIMessageChunk):
                             if chunk.content and isinstance(chunk.content, str):
                                 if self.stream_chat_callback:
@@ -514,7 +583,7 @@ class AIFE:
             memory_context = self.memory_manager.get_memory_context(user_input)
             
             # 添加用户消息到记忆系统
-            self.memory_manager.add_message(HumanMessage(content=user_input))
+            self.memory_manager.short_term_memory.add_message(HumanMessage(content=user_input))
             
             # 获取对话历史
             messages = self.memory_manager.get_recent_messages(10)
@@ -533,10 +602,9 @@ class AIFE:
                             await self._safe_call_callback(chunk.content)
                         yield str(chunk.content)
             
-            # 计算回复重要性并添加到记忆系统
+            # 添加AI回复到记忆系统
             if full_response:
-                importance = self._calculate_response_importance(user_input, full_response)
-                self.memory_manager.add_message(AIMessage(content=full_response), importance)
+                self.memory_manager.short_term_memory.add_message(AIMessage(content=full_response))
                 
         except Exception as e:
             error_msg = f"Chat processing failed: {str(e)}"
@@ -558,27 +626,7 @@ class AIFE:
 
     # ============ 系统状态查询 ============
     
-    def _calculate_response_importance(self, user_input: str, response: str) -> float:
-        """计算回复的重要性分数"""
-        # 简单的重要性计算逻辑
-        importance = 0.5  # 基础重要性
-        
-        # 根据用户输入长度调整
-        if len(user_input) > 50:
-            importance += 0.1
-            
-        # 根据回复长度调整
-        if len(response) > 100:
-            importance += 0.1
-            
-        # 检查是否包含重要关键词
-        important_keywords = ['记住', '重要', '提醒', '不要忘记', '记录']
-        for keyword in important_keywords:
-            if keyword in user_input or keyword in response:
-                importance += 0.2
-                break
-                
-        return min(importance, 1.0)
+
     
     def get_status_summary(self) -> Dict[str, Any]:
         """获取状态摘要"""

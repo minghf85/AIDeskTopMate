@@ -579,6 +579,8 @@ class TransparentLive2dWindow(QOpenGLWidget):
             self.model.Update(1.0/FPS)
             if self.mouth.stream.is_playing():
                 self.model.SetParameterValueById("ParamMouthOpenY", self.mouth.stream.GetRms() * lipSyncN, 1)
+            else:
+                self.model.SetParameterValueById("ParamMouthOpenY", 0, 1)
             if self.SetAndAdd.isrunning:
                 if self.SetAndAdd.set_id:
                     self.model.SetParameterValueById(self.SetAndAdd.set_id, self.SetAndAdd.set_value, self.SetAndAdd.set_weight)
