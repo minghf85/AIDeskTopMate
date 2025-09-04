@@ -3,6 +3,7 @@ from utils.log_manager import LogManager
 from datetime import datetime
 from dotmap import DotMap
 from Body.tlw import Live2DSignals
+from Head.Brain.feel import FeelState
 import toml
 import os
 import random
@@ -18,6 +19,7 @@ from langchain_community.utilities import WikipediaAPIWrapper
 from langchain_openai import ChatOpenAI
 from langchain_ollama import ChatOllama
 from langchain_anthropic import ChatAnthropic
+from langchain_community.chat_message_histories import ChatMessageHistory
 from .mem import MemoryManager
 from langchain.agents import AgentExecutor, Tool
 from langchain.schema import AgentAction, AgentFinish
@@ -52,13 +54,22 @@ class AIFE:
         self.persona = str(self.config.persona)
         self.short_term_memory.add_message(SystemMessage(content=self.persona))
         
+        # note
+        self.note_history = ChatMessageHistory()
+        self.note_history.clear()
+        self.note_prompt = self.config.note_prompt.format(persona=self.config.persona)
+        self.note_history.add_message(SystemMessage(content=self.note_prompt))
+        
+        # Track processed chat history for note writing
+        self.last_note_message_count = 0
+
         # Signal connections
         self.live2d_signals = live2d_signals or live2dsignal
         self.message_signals = message_signals  # Receives MessageSignals object
         
         # Record executed actions
         self.executed_actions = []
-        self.current_user_input = ""
+
         
         # Initialize tools
         self.tools = self._create_tools()
@@ -77,7 +88,7 @@ class AIFE:
         )
     
     class MultiActionOutputParser:
-        """Custom multi-action output parser to ensure ShouldRespond tool is executed last"""
+        """Custom multi-action output parser to ensure ShouldTalk tool is executed last"""
         
         def __init__(self, tools_list):
             self.tool_names = [tool.name.lower() for tool in tools_list]
@@ -93,21 +104,21 @@ class AIFE:
                 )
             
             actions = []
-            should_respond_action = None
+            should_talk_action = None
             
             # Match actions using regex
             action_pattern = r'Action:\s*(\w+)\s*Action Input:\s*([^\n]+)'
             matches = re.findall(action_pattern, text, re.IGNORECASE)
             
-            # Collect all actions, placing ShouldRespond last
+            # Collect all actions, placing ShouldTalk last
             for tool_name, tool_input in matches:
                 tool_name_lower = tool_name.lower()
-                if tool_name_lower == 'shouldrespond':
-                    # Save ShouldRespond action to add later
-                    should_respond_action = AgentAction(
-                        tool="ShouldRespond",
+                if tool_name_lower == 'shouldtalk':
+                    # Save ShouldTalk action to add later
+                    should_talk_action = AgentAction(
+                        tool="ShouldTalk",
                         tool_input=tool_input.strip(),
-                        log=f"Action: ShouldRespond\nAction Input: {tool_input}"
+                        log=f"Action: ShouldTalk\nAction Input: {tool_input}"
                     )
                     continue
                 if tool_name_lower in self.tool_names:
@@ -117,22 +128,22 @@ class AIFE:
                         log=f"Action: {tool_name}\nAction Input: {tool_input}"
                     ))
             
-            # Add ShouldRespond action last if it exists
-            if should_respond_action:
-                actions.append(should_respond_action)
+            # Add ShouldTalk action last if it exists
+            if should_talk_action:
+                actions.append(should_talk_action)
             else:
-                # Automatically add a default ShouldRespond action if not present
+                # Automatically add a default ShouldTalk action if not present
                 actions.append(AgentAction(
-                    tool="ShouldRespond",
+                    tool="ShouldTalk",
                     tool_input="true",
-                    log="Automatically added ShouldRespond: Default response required"
+                    log="Automatically added ShouldTalk: Default talk required"
                 ))
             
             return actions if actions else [
                 AgentAction(
-                    tool="ShouldRespond",
+                    tool="ShouldTalk",
                     tool_input="true",
-                    log="Only executing ShouldRespond step"
+                    log="Only executing ShouldTalk step"
                 )
             ]
     
@@ -151,10 +162,18 @@ class AIFE:
                 func=lambda x: asyncio.run(self._recall_query(x)),
                 description="Retrieve relevant information from long-term memory. Use this when you need to recall previously stored information or answer questions that require historical memory. Input format: query keywords or question. Example: user's beverage preferences"
             ))
+
+        if "ocr" in self.config.actions.enabled:
+            tools.append(Tool(
+                name="OCR_Screen",
+                func=lambda x: asyncio.run(self._ocr_screen(x)),
+                description="Perform OCR on the screen to see what is the user doing. Format: 0/1. 0:fullscreen,1:region around cursor"
+            ))
+
         if "get_current_time" in self.config.actions.enabled:
             tools.append(Tool(
                 name="GetCurrentTime",
-                func=self._get_current_time,
+                func=lambda x: asyncio.run(self._get_current_time(x)),
                 description=f"Get current time.Format: Yes"
             ))
         # Expression setting tool
@@ -180,12 +199,15 @@ class AIFE:
         
         # Web search tool
         if "web_search" in self.config.actions.enabled:
-            wikipedia = WikipediaQueryRun(api_wrapper=WikipediaAPIWrapper())
-            tools.append(Tool(
-                name="WebSearch",
-                func=wikipedia.run,
-                description="Search Wikipedia for information"
-            ))
+            try:
+                wikipedia = WikipediaQueryRun(api_wrapper=WikipediaAPIWrapper())
+                tools.append(Tool(
+                    name="WebSearch",
+                    func=wikipedia.run,
+                    description="Search Wikipedia for information"
+                ))
+            except Exception as e:
+                self.logger.warning(f"Failed to initialize Wikipedia tool: {e}")
 
         # Emoji display tool
         if "show_emoji" in self.config.actions.enabled:
@@ -207,9 +229,9 @@ class AIFE:
         
 
         tools.append(Tool(
-            name="ShouldRespond",
-            func=lambda x: asyncio.run(self._should_respond(x)),
-            description="Tool to determine whether to respond to the user. Input true to respond, false otherwise. Format: true or false"
+            name="ShouldTalk",
+            func=lambda x: asyncio.run(self._should_talk(x)),
+            description="Tool to determine whether to talk to the user (including responding to user and initiating conversation). Input true to talk, false otherwise. Format: true or false"
         ))
         
         return tools
@@ -324,7 +346,26 @@ class AIFE:
             self.logger.error(f"Memory recall failed: {e}")
             return f"✗ Memory recall failed: {str(e)}"
 
-    def _get_current_time(self, *args, **kwargs) -> str:
+
+    async def _ocr_screen(self, mode: str) -> str:
+        """Perform OCR on screen"""
+        mode = mode.strip().split('\n')[0].split()[0]
+        self.logger.info(f"_ocr_screen input parameter: {mode}")
+        
+        try:
+            # This is a placeholder for OCR functionality
+            # You would implement actual OCR logic here
+            if mode == "0":
+                return "✓ OCR performed on full screen"
+            elif mode == "1":
+                return "✓ OCR performed on cursor region"
+            else:
+                return "✗ Invalid OCR mode, use 0 or 1"
+        except Exception as e:
+            self.logger.error(f"OCR failed: {e}")
+            return f"✗ OCR failed: {str(e)}"
+
+    async def _get_current_time(self, *args, **kwargs) -> str:
         """Get current time - ignores all input parameters"""
         return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     async def _set_expression(self, expression: str) -> str:
@@ -430,18 +471,18 @@ class AIFE:
             self.logger.error(f"Error playing audio: {e}")
             return f"✗ Failed to play audio"
 
-    async def _should_respond(self, should_respond: str) -> str:
-        """Wrapper function for ShouldRespond tool, used by Agent"""
+    async def _should_talk(self, should_talk: str) -> str:
+        """Wrapper function for ShouldTalk tool, used by Agent"""
         # Parse boolean input
-        should_respond_clean = should_respond.strip().lower()
+        should_talk_clean = should_talk.strip().lower()
         
-        if should_respond_clean in ['true', 'yes', '1']:
-            # Mark ShouldRespond as called and response required
-            return "✓ Response required"
+        if should_talk_clean in ['true', 'yes', '1']:
+            # Mark ShouldTalk as called and talk required
+            return "✓ Talk required"
         
-        elif should_respond_clean in ['false', 'no', '0']:
-            # Mark ShouldRespond as called but no response required
-            return "✓ No response required"
+        elif should_talk_clean in ['false', 'no', '0']:
+            # Mark ShouldTalk as called but no talk required
+            return "✓ No talk required"
         
         else:
             return "✗ Invalid boolean value, please use true or false"
@@ -480,19 +521,87 @@ class AIFE:
             self.logger.error(f"llm连接失败，请检查配置或代理")
             return None
 
+    async def handle_free_time(self) -> AsyncGenerator[str, None]:
+        if random.random() < 0.2:
+            await self._write_note()
+            yield "I've written a note"
+            return  # 写日记后直接返回，不需要继续执行
+        else:
+            try:
+                result = await self.agent_executor.ainvoke({"input": f"System: you are ignored by {self.user} do what you want.(if you want to initiate a conversation use ShouldTalk)"})
+                if 'intermediate_steps' in result:
+                    for action, observation in result['intermediate_steps']:
+                        self.logger.info(f"➤ {action.tool}:")
+                        self.logger.info(f"  Input: {action.tool_input}")
+                        self.logger.info(f"  Result: {observation}")
+                        
+                        # Record executed actions
+                        self.executed_actions.append({
+                            "type": "ToolEnd",
+                            "name": action.tool,
+                            "input": action.tool_input,
+                            "output": observation
+                        })
+                        
+                        # Check if it is the ShouldTalk tool
+                        if action.tool == "ShouldTalk":
+                            if "✓ Talk required" in observation:
+                                common_chat_result = True
+                            elif "✓ No talk required" in observation:
+                                common_chat_result = False
+                
+                # Check if ShouldTalk was executed
+                if common_chat_result is None:
+                    # If ShouldTalk was not executed, log a warning and default to requiring a talk
+                    self.logger.warning("Agent did not execute ShouldTalk tool, defaulting to talk required")
+                    common_chat_result = True
+                
+                # If ShouldTalk returns True, execute language response
+                if common_chat_result:
+                    # Construct context with executed actions
+                    self.logger.info(f"ShouldTalk result is True, executed actions: {self.executed_actions}")
+                    
+                    # Filter executed_actions, keeping only actually executed actions
+                    filtered_actions = []
+                    for action in self.executed_actions:
+                        if action["name"] != "ShouldTalk":
+                            if action.get("output", ""):
+                                filtered_actions.append({
+                                    "name": action["name"],
+                                    "result": action["output"]
+                                })
+                    
+                    context_input = f"system: you are ignored by {self.user}\nYou have done these: {filtered_actions}\nInitiate a conversation naturally"
+                    self.logger.info(f"context_input: {context_input}")
+                    # Create temporary messages for streaming generation
+                    self.short_term_memory.add_message(HumanMessage(content=context_input))
+                    
+                    # Use messages with action descriptions for streaming conversation
+                    if self.llm:
+                        async for chunk in self.llm.astream(self.short_term_memory.messages):
+                            if isinstance(chunk, AIMessageChunk):
+                                if chunk.content and isinstance(chunk.content, str):
+                                    if self.stream_chat_callback:
+                                        await self._safe_call_callback(chunk.content)
+                                    yield str(chunk.content)
+                    else:
+                        yield "LLM not initialized properly"
+
+            except Exception as e:
+                error_msg = f"Error executing Agent tools: {str(e)}"
+                self.logger.error(error_msg)
+                yield error_msg
     async def agent_chat(self, user_input: str) -> AsyncGenerator[str, None]:
         """Asynchronous streaming agent chat generator - Executes multi-action Agent and returns streaming responses"""
         try:
-            # Record current user input and clear action records
-            self.current_user_input = user_input
+            # Clear action records
             self.executed_actions = []
-            common_chat_result = None  # Record result of ShouldRespond
-            
+            common_chat_result = None  # Record result of ShouldTalk
             # Execute multi-action Agent
             try:
+                if user_input:
                 # Directly use agent_executor's ainvoke method to execute multi-actions
-                result = await self.agent_executor.ainvoke({"input": user_input})
-                
+                    result = await self.agent_executor.ainvoke({"input": user_input})
                 # Display execution results
                 self.logger.info("📋 Multi-action execution details:")
                 if 'intermediate_steps' in result:
@@ -509,28 +618,28 @@ class AIFE:
                             "output": observation
                         })
                         
-                        # Check if it is the ShouldRespond tool
-                        if action.tool == "ShouldRespond":
-                            if "✓ Response required" in observation:
+                        # Check if it is the ShouldTalk tool
+                        if action.tool == "ShouldTalk":
+                            if "✓ Talk required" in observation:
                                 common_chat_result = True
-                            elif "✓ No response required" in observation:
+                            elif "✓ No talk required" in observation:
                                 common_chat_result = False
                 
-                # Check if ShouldRespond was executed
+                # Check if ShouldTalk was executed
                 if common_chat_result is None:
-                    # If ShouldRespond was not executed, log a warning and default to requiring a response
-                    self.logger.warning("Agent did not execute ShouldRespond tool, defaulting to response required")
+                    # If ShouldTalk was not executed, log a warning and default to requiring a talk
+                    self.logger.warning("Agent did not execute ShouldTalk tool, defaulting to talk required")
                     common_chat_result = True
                 
-                # If ShouldRespond returns True, execute language response
+                # If ShouldTalk returns True, execute language response
                 if common_chat_result:
                     # Construct context with executed actions
-                    self.logger.info(f"ShouldRespond result is True, executed actions: {self.executed_actions}")
+                    self.logger.info(f"ShouldTalk result is True, executed actions: {self.executed_actions}")
                     
                     # Filter executed_actions, keeping only actually executed actions
                     filtered_actions = []
                     for action in self.executed_actions:
-                        if action["name"] != "ShouldRespond":
+                        if action["name"] != "ShouldTalk":
                             if action.get("output", ""):
                                 filtered_actions.append({
                                     "name": action["name"],
@@ -543,12 +652,15 @@ class AIFE:
                     self.short_term_memory.add_message(HumanMessage(content=context_input))
                     
                     # Use messages with action descriptions for streaming conversation
-                    async for chunk in self.llm.astream(self.short_term_memory.messages):
-                        if isinstance(chunk, AIMessageChunk):
-                            if chunk.content and isinstance(chunk.content, str):
-                                if self.stream_chat_callback:
-                                    await self._safe_call_callback(chunk.content)
-                                yield str(chunk.content)
+                    if self.llm:
+                        async for chunk in self.llm.astream(self.short_term_memory.messages):
+                            if isinstance(chunk, AIMessageChunk):
+                                if chunk.content and isinstance(chunk.content, str):
+                                    if self.stream_chat_callback:
+                                        await self._safe_call_callback(chunk.content)
+                                    yield str(chunk.content)
+                    else:
+                        yield "LLM not initialized properly"
 
             except Exception as e:
                 error_msg = f"Error executing Agent tools: {str(e)}"
@@ -578,13 +690,16 @@ class AIFE:
                 messages = [context_msg] + messages
 
             full_response = ""
-            async for chunk in self.llm.astream(messages):
-                if isinstance(chunk, AIMessageChunk):
-                    if chunk.content and isinstance(chunk.content, str):
-                        full_response += chunk.content
-                        if self.stream_chat_callback:
-                            await self._safe_call_callback(chunk.content)
-                        yield str(chunk.content)
+            if self.llm:
+                async for chunk in self.llm.astream(messages):
+                    if isinstance(chunk, AIMessageChunk):
+                        if chunk.content and isinstance(chunk.content, str):
+                            full_response += chunk.content
+                            if self.stream_chat_callback:
+                                await self._safe_call_callback(chunk.content)
+                            yield str(chunk.content)
+            else:
+                yield "LLM not initialized properly"
             
             # 添加AI回复到记忆系统
             if full_response:
@@ -594,6 +709,85 @@ class AIFE:
             error_msg = f"Chat processing failed: {str(e)}"
             self.logger.error(error_msg)
             yield error_msg
+
+    async def _write_note(self) -> str:
+        """Write diary and inner monologue to long-term memory"""
+        try:
+            # Get new chat histories
+            new_histories = self.get_new_histories()
+            
+            # If no new content, skip note writing
+            if new_histories in ["No new chat history since last note.", "No new conversational content."]:
+                self.logger.info("No new content for note writing")
+                return "✓ No new content to write note"
+            
+            # Add new histories to note history
+            self.note_history.add_message(HumanMessage(content=f"New chat history:\n{new_histories}"))
+            
+            # Generate note using LLM
+            if not self.llm:
+                self.logger.error("LLM not initialized for note writing")
+                return "✗ LLM not available for note writing"
+                
+            response = await self.llm.ainvoke(self.note_history.messages)
+            
+            if response and response.content:
+                # Ensure content is string
+                note_content = response.content
+                if isinstance(note_content, list):
+                    note_content = str(note_content)
+                
+                # Add note to long-term memory with special prefix
+                self.memory_manager.long_term_memory.add_memory_with_user(
+                    memory=f"[Internal Note] {note_content}",
+                    user=self.user
+                )
+                
+                # Add AI response to note history
+                self.note_history.add_message(AIMessage(content=note_content))
+                
+                self.logger.info(f"Note written successfully: {note_content[:100]}...")
+                return f"✓ Note written: {note_content[:50]}..."
+            else:
+                self.logger.error("No response from LLM for note writing")
+                return "✗ Failed to generate note"
+                
+        except Exception as e:
+            self.logger.error(f"Error writing note: {e}")
+            return f"✗ Note writing failed: {str(e)}"
+
+
+    def get_new_histories(self) -> str:
+        """Get the latest chat histories that are not yet sent to write_note"""
+        try:
+            # Get all messages from short term memory
+            all_messages = self.short_term_memory.messages
+            
+            # Get new messages since last note
+            new_messages = all_messages[self.last_note_message_count:]
+            
+            # Format new messages as string
+            if not new_messages:
+                return "No new chat history since last note."
+            
+            formatted_history = []
+            for msg in new_messages:
+                if isinstance(msg, HumanMessage):
+                    formatted_history.append(f"{self.user}: {msg.content}")
+                elif isinstance(msg, AIMessage):
+                    formatted_history.append(f"{self.config.name}: {msg.content}")
+                elif isinstance(msg, SystemMessage):
+                    # Skip system messages for note writing
+                    continue
+            
+            # Update the count of processed messages
+            self.last_note_message_count = len(all_messages)
+            
+            return "\n".join(formatted_history) if formatted_history else "No new conversational content."
+            
+        except Exception as e:
+            self.logger.error(f"Error getting new histories: {e}")
+            return "Error retrieving chat history."
 
     async def _safe_call_callback(self, content: str):
         """安全调用回调函数，自动检测是否为异步函数"""
@@ -610,7 +804,6 @@ class AIFE:
 
     # ============ 系统状态查询 ============
     
-
     
     def get_status_summary(self) -> Dict[str, Any]:
         """获取状态摘要"""

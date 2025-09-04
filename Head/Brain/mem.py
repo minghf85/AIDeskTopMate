@@ -392,6 +392,8 @@ class LongTermMemory:
             self.logger.error(f"为用户 {user} 查询记忆失败: {e}")
             return []
 
+
+
     def delete_memory(self, memory: str, metadata: Optional[Dict[str, Any]] = None):
         """删除单条记忆"""
         try:
@@ -487,3 +489,4 @@ class LongTermMemory:
         except Exception as e:
             self.logger.error(f"重建向量存储失败: {e}")
             raise
+            

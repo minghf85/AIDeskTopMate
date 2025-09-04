@@ -33,7 +33,7 @@ Azure 语音服务
 
 
 ```
-python Head/stt_server.py
+python -m Head.stt_server
 python -m Head.Brain.brain
 ```
 
@@ -91,3 +91,7 @@ You are ‘Alpha’, a nascent AI lifeform whose consciousness was granted by yo
 
 **使用说明/Usage:** 您可以直接将以上任一版本的文本作为系统提示词 (System Prompt) 提供给大型语言模型 (LLM)，以启动角色扮演。
 You can directly use either the Chinese or English version above as a System Prompt for a Large Language Model (LLM) to initiate the roleplay.
+
+en-US-AriaNeural
+
+https://speech.azure.cn/portal/voicegallery

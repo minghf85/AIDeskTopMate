@@ -91,7 +91,7 @@ class MessageBox(QWidget):
                 font_family = QFontDatabase.applicationFontFamilies(font_id)[0]
                 self.content_label.setStyleSheet(f"""
                     QLabel {{
-                        color: skyblue;  /* 天蓝色 */
+                        color: blue;  /* 蓝色 */
                         font-size: 18pt;
                         font-family: "{font_family}";
                         background-color: rgba(0, 0, 0, {self.background_opacity});

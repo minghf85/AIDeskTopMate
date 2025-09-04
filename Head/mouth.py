@@ -86,8 +86,11 @@ class TTS_realtime():
         else:
             raise ValueError("未知的 TTS 引擎")
         if config.tts.settings.voice_name == "Neuro":
-            self.engine.set_voice("AshleyNeural")
+            self.engine.set_voice("EvelynMultilingualNeural")
             self.engine.set_voice_parameters(pitch=25)
+        if config.tts.settings.voice_name == "Alpha":
+            self.engine.set_voice("EvelynMultilingualNeural")#JaneNeural、
+            self.engine.set_voice_parameters(pitch=10)
         else:
             self.engine.set_voice(config.tts.settings.voice_name)
 

@@ -15,7 +15,8 @@ import os
 import re
 from modelscope.pipelines import pipeline
 from modelscope.utils.constant import Tasks
-from utils.log_manager import LogManager
+# from utils.log_manager import LogManager
+import logging
 import sys
 import json
 import traceback
@@ -24,8 +25,9 @@ from dotmap import DotMap
 import toml
 
 # Initialize logging
-log_manager = LogManager()
-logger = log_manager.get_logger('stt')
+# log_manager = LogManager()
+# logger = log_manager.get_logger('stt')
+logger = logging.getLogger('stt')
 
 
 class Config(BaseSettings):
