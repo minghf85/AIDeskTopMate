@@ -102,7 +102,7 @@ class InteractionState:
     last_interaction_time: Optional[float] = None  # 最后一次用户输入时间
     last_response_time: Optional[float] = None  # 最后一次agent响应完成时间
     is_free: bool = False  # 是否空闲
-    free_threshold: float = 30.0  # 空闲判断阈值(秒)
+    free_threshold: float = 40.0  # 空闲判断阈值(秒)
     
     # 打断相关
     interrupted: bool = False

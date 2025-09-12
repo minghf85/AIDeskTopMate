@@ -5,7 +5,7 @@ from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import QThread, pyqtSignal, QObject, Qt, QTimer
 from Body.tlw import TransparentLive2dWindow, Live2DSignals
 from langchain_core.messages import HumanMessage, AIMessage, AIMessageChunk
-from Head.Brain.agent import AIFE
+from Head.Brain.aife import AIFE
 from Head.ear import ASR
 from Head.Brain.feel import FeelState, InterruptMode, InteractionMode, AgentMode
 from Head.mouth import TTS_GSV,TTS_realtime

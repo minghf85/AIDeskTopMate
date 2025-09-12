@@ -177,7 +177,7 @@ asr_pipeline = pipeline(
 model_asr = AutoModel(
     model="iic/SenseVoiceSmall",
     trust_remote_code=True,
-    remote_code="./model.py",    
+    remote_code="./Head/model.py",    
 
     disable_update=True,
     #device="cpu"

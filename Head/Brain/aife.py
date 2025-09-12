@@ -1,3 +1,4 @@
+from enum import Enum
 from typing import Dict, Any, List, Optional, Callable, Generator, Union, Tuple, AsyncGenerator
 from utils.log_manager import LogManager
 from datetime import datetime
@@ -10,8 +11,8 @@ import random
 import asyncio
 import inspect
 config = DotMap(toml.load("config.toml"))
-
-# 导入langchain相关组件
+user = config.agent.user
+# Import langchain related components
 from langchain_core.messages import HumanMessage, AIMessage, AIMessageChunk, SystemMessage
 from langchain.prompts import PromptTemplate, ChatPromptTemplate
 from langchain_community.tools import WikipediaQueryRun
@@ -32,6 +33,18 @@ import re
 
 live2dsignal = Live2DSignals()
 
+class Identity(Enum):  # Information identifier
+    User = user  # Used to identify user input information
+    Brain = "your brain"  # Used to identify information given by digital human's own brain
+    Body = "your live2d body"  # Used to identify information given by digital human's body
+    System = "system"  # Used to identify information given by system environment, i.e., narrator
+
+DEFAULT_IDENTITY_DEFINITIONS = {
+    Identity.User: "who is interacting with you.",
+    Identity.Brain: "who tells you what you've done and guides you on how to respond",
+    Identity.Body: "who can set expressions and start motions following your brain's instructions.",
+    Identity.System: "who provide the system environment information.",
+}
 
 class AIFE:
     """AI Virtual Companion Agent"""
@@ -44,14 +57,20 @@ class AIFE:
         # Basic components
         self.config = agent_config
         self.llm = self._initialize_llm(self.config.llm.platform, self.config.llm.llm_config)
-        self.user = self.config.user
+        self.user = user
         self.stream_chat_callback = stream_chat_callback
-        # 初始化记忆管理器，传入agent名称和用户信息
+        # Initialize memory manager, passing agent name and user information
         self.memory_manager = MemoryManager(agent_name=self.config.name, agent_user=self.user)
-        # 保持向后兼容性
+        # Maintain backward compatibility
         self.short_term_memory = self.memory_manager.short_term_memory
         self.short_term_memory.clear()
-        self.persona = str(self.config.persona)
+        
+        # Format persona with identity definitions
+        identity_definitions_str = "\n".join([
+            f"{identity.value}: {definition}"
+            for identity, definition in DEFAULT_IDENTITY_DEFINITIONS.items()
+        ])
+        self.persona = str(self.config.persona).format(Identity_Definitions=identity_definitions_str)
         self.short_term_memory.add_message(SystemMessage(content=self.persona))
         
         # note
@@ -150,38 +169,36 @@ class AIFE:
     def _create_tools(self):
         """Create tool list"""
         tools = []
+        tools.append(Tool(
+            name="WhatICanDo",
+            func=lambda x: asyncio.run(self._whaticando(x)),
+            description="Ues this when being asked what can i do. Format: Yes"
+        ))
         if "remember" in self.config.actions.enabled:
             tools.append(Tool(
                 name="Remember",
                 func=lambda x: asyncio.run(self._remember_something(x)),
-                description="Store important information into long-term memory. Use this to remember user preferences, important facts, personal information, and other content that needs to be preserved long-term. Input format: content to remember. Example: User prefers coffee over tea"
+                description="Store important information into long-term memory when needing to remember user preferences, important facts, personal information, and other content that needs to be preserved long-term. Input format: content to remember. Example: our code is Light_Sea_Grand"
             ))
         if "recall" in self.config.actions.enabled:
             tools.append(Tool(
                 name="Recall",
                 func=lambda x: asyncio.run(self._recall_query(x)),
-                description="Retrieve relevant information from long-term memory. Use this when you need to recall previously stored information or answer questions that require historical memory. Input format: query keywords or question. Example: user's beverage preferences"
-            ))
-
-        if "ocr" in self.config.actions.enabled:
-            tools.append(Tool(
-                name="OCR_Screen",
-                func=lambda x: asyncio.run(self._ocr_screen(x)),
-                description="Perform OCR on the screen to see what is the user doing. Format: 0/1. 0:fullscreen,1:region around cursor"
+                description="Retrieve relevant information from long-term memory when needing to recall previously stored information or answer questions that require historical memory. Input format: query keywords or question. Example: 9+10=21 and this is a meme"
             ))
 
         if "get_current_time" in self.config.actions.enabled:
             tools.append(Tool(
                 name="GetCurrentTime",
                 func=lambda x: asyncio.run(self._get_current_time(x)),
-                description=f"Get current time.Format: Yes"
+                description=f"Get current time. Format: Yes"
             ))
         # Expression setting tool
         if "set_expression" in self.config.actions.enabled:
             tools.append(Tool(
                 name="SetExpression",
                 func=lambda x: asyncio.run(self._set_expression(x)),
-                description=f"Set Live2D expression. Format: expression. Available expressions: {', '.join(self.config.live2d.available_expression.keys())}"
+                description=f"Set mate's Live2D expression. Format: expression. Available expressions: {', '.join(self.config.live2d.available_expression.keys())}"
             ))
         
         # Motion start tool
@@ -194,7 +211,7 @@ class AIFE:
             tools.append(Tool(
                 name="StartMotion",
                 func=lambda x: asyncio.run(self._start_motion(x)),
-                description=f"Start Live2D motion. Format: group_index. Available motions: {'; '.join(motion_desc)}"
+                description=f"Start mate's Live2D motion. Format: group_index. Available motions: {'; '.join(motion_desc)}"
             ))
         
         # Web search tool
@@ -237,21 +254,21 @@ class AIFE:
         return tools
     
     def _create_multi_action_agent(self):
-        """创建多动作Runnable链"""
+        """Create multi-action Runnable chain"""
         
-        # 创建prompt模板
+        # Create prompt template
         prompt = ChatPromptTemplate.from_messages([
             ("system", self.config.decision_prompt),
             ("human", "{input}"),
             MessagesPlaceholder(variable_name="agent_scratchpad", optional=True)
         ])
         
-        # 创建输出解析器
+        # Create output parser
         output_parser = self.MultiActionOutputParser(self.tools)
         
         # 格式化函数
         def format_scratchpad(intermediate_steps: List[Tuple[AgentAction, str]]) -> List[BaseMessage]:
-            """格式化中间步骤"""
+            """Format intermediate steps"""
             if not intermediate_steps:
                 return []
                 
@@ -262,7 +279,10 @@ class AIFE:
                 messages.append(AIMessage(content="\n".join(results)))
             return messages
         
-        # 创建Runnable链
+        # Create Runnable chain
+        if self.llm is None:
+            raise ValueError("LLM is not initialized properly")
+            
         chain = (
             RunnablePassthrough.assign(
                 agent_scratchpad=lambda x: format_scratchpad(x.get("intermediate_steps", []))
@@ -275,13 +295,13 @@ class AIFE:
             | (lambda x: output_parser.parse(x.content))
         )
         
-        # 创建RunnableMultiActionAgent
+        # Create RunnableMultiActionAgent
         return RunnableMultiActionAgent(
             runnable=chain,
         )
     
     def _get_available_emojis(self):
-        """获取可用的表情包列表"""
+        """Get available emoji list"""
         assets_path = self.config.assets.assets_path
         if os.path.exists(assets_path):
             return [f for f in os.listdir(assets_path) 
@@ -289,13 +309,105 @@ class AIFE:
         return []
     
     def _get_available_audio(self):
-        """获取可用的音频列表"""
+        """Get available audio list"""
         assets_path = self.config.assets.assets_path
         if os.path.exists(assets_path):
             return [f for f in os.listdir(assets_path) 
                    if f.endswith(('.mp3', '.wav', '.ogg'))]
         return []
     
+    def _format_executed_actions(self, executed_actions: List[Dict]) -> str:
+        """Convert executed actions to natural language descriptions"""
+        if not executed_actions:
+            return ""
+        
+        action_descriptions = []
+        for action in executed_actions:
+            action_name = action.get("name", "")
+            # Use "result" instead of "output" as that's what we pass from filtered_actions
+            action_output = action.get("result", action.get("output", ""))
+            
+            # Debug logging for WhatICanDo action
+            if action_name == "WhatICanDo":
+                self.logger.debug(f"WhatICanDo action processing - name: {action_name}, output: '{action_output}', type: {type(action_output)}")
+            
+            # Generate natural language descriptions based on action types
+            if action_name == "SetExpression":
+                if "✓ Expression set:" in action_output:
+                    expression = action_output.split(":")[-1].strip()
+                    body_action = self._create_context_message(Identity.Body, f"adjusted expression to {expression}")
+                    action_descriptions.append(body_action)
+                elif "✗" in action_output:
+                    body_action = self._create_context_message(Identity.Body, "tried to adjust expression but failed")
+                    action_descriptions.append(body_action)
+            
+            elif action_name == "StartMotion":
+                if "✓ Motion executed:" in action_output:
+                    motion = action_output.split(":")[-1].strip()
+                    body_action = self._create_context_message(Identity.Body, f"performed {motion} motion")
+                    action_descriptions.append(body_action)
+                elif "✗" in action_output:
+                    body_action = self._create_context_message(Identity.Body, "tried to perform motion but failed")
+                    action_descriptions.append(body_action)
+            
+            elif action_name == "ShowEmoji":
+                if "✓ Emoji sent:" in action_output:
+                    emoji = action_output.split(":")[-1].strip()
+                    action_descriptions.append(f"I sent {emoji} emoji")
+                elif "✗" in action_output:
+                    action_descriptions.append("I tried to send emoji but failed")
+            
+            elif action_name == "PlayAudio":
+                if "✓ Audio played:" in action_output:
+                    audio = action_output.split(":")[-1].strip()
+                    action_descriptions.append(f"I played {audio} audio")
+                elif "✗" in action_output:
+                    action_descriptions.append("I tried to play audio but failed")
+            
+            elif action_name == "Remember":
+                if "✓ I have remembered:" in action_output:
+                    content = action_output.split(":")[-1].strip()
+                    action_descriptions.append(f"I remembered: {content}")
+                elif "✗" in action_output:
+                    action_descriptions.append("I tried to remember something but failed")
+            
+            elif action_name == "Recall":
+                if "I recalled the following information:" in action_output:
+                    action_descriptions.append(action_output)
+                elif "couldn't find any relevant memories" in action_output:
+                    action_descriptions.append("I couldn't find relevant memories")
+                elif "✗" in action_output:
+                    action_descriptions.append("I tried to recall information but failed")
+            
+            elif action_name == "GetCurrentTime":
+                if ":" in action_output:
+                    time_info = action_output.strip()
+                    action_descriptions.append(f"I checked the current time: {time_info}")
+            
+            elif action_name == "WebSearch":
+                if action_output and not action_output.startswith("✗"):
+                    action_descriptions.append(f"I searched for relevant information: {action_output}")
+                else:
+                    action_descriptions.append("I tried to search for information but failed")
+            
+            elif action_name == "WhatICanDo":
+                # Use the actual output from the action, which should contain the capabilities list
+                if action_output:
+                    brain_action = self._create_context_message(Identity.Brain, f"reviewed my capabilities: {action_output}")
+                    action_descriptions.append(brain_action)
+                else:
+                    brain_action = self._create_context_message(Identity.Brain, "reviewed my capabilities")
+                    action_descriptions.append(brain_action)
+        
+        return ", ".join(action_descriptions) if action_descriptions else ""
+    
+    def _create_context_message(self, identity: Identity, content: str) -> str:
+        """Create context message with identity label"""
+        return f"{identity.value}: {content}"
+    
+    async def _whaticando(self, something: str) -> str:
+        """获取自己的actions"""
+        return str(self.config.actions.enabled)
     async def _remember_something(self, something: str) -> str:
         """记住某些信息到长期记忆中"""
         something = something.strip().split('\n')[0]
@@ -347,24 +459,6 @@ class AIFE:
             return f"✗ Memory recall failed: {str(e)}"
 
 
-    async def _ocr_screen(self, mode: str) -> str:
-        """Perform OCR on screen"""
-        mode = mode.strip().split('\n')[0].split()[0]
-        self.logger.info(f"_ocr_screen input parameter: {mode}")
-        
-        try:
-            # This is a placeholder for OCR functionality
-            # You would implement actual OCR logic here
-            if mode == "0":
-                return "✓ OCR performed on full screen"
-            elif mode == "1":
-                return "✓ OCR performed on cursor region"
-            else:
-                return "✗ Invalid OCR mode, use 0 or 1"
-        except Exception as e:
-            self.logger.error(f"OCR failed: {e}")
-            return f"✗ OCR failed: {str(e)}"
-
     async def _get_current_time(self, *args, **kwargs) -> str:
         """Get current time - ignores all input parameters"""
         return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -382,7 +476,8 @@ class AIFE:
                 # Send signal to Live2D
                 if self.live2d_signals:
                     self.live2d_signals.expression_requested.emit(expression_id)
-                self.logger.info(f"Set expression: {expression} (ID: {expression_id})")
+                body_info = self._create_context_message(Identity.Body, f"Expression set to {expression} (ID: {expression_id})")
+                self.logger.info(body_info)
                 return f"✓ Expression set: {expression}"
             else:
                 available = list(self.config.live2d.available_expression.keys())
@@ -420,7 +515,8 @@ class AIFE:
                 self.live2d_signals.motion_requested.emit(group, index, 3)
             
             motion_desc = motions[index]
-            self.logger.info(f"Start motion: {group}_{index} - {motion_desc}")
+            body_info = self._create_context_message(Identity.Body, f"Motion started: {group}_{index} - {motion_desc}")
+            self.logger.info(body_info)
             return f"✓ Motion executed: {group}_{index}"
             
         except ValueError:
@@ -499,7 +595,7 @@ class AIFE:
 
     
     def _initialize_llm(self, platform: str, llm_config: Dict[str, Any]):
-        """初始化语言模型"""
+        """Initialize language model"""
         if platform == "openai":
             llm =  ChatOpenAI(**llm_config)
         elif platform == "ollama":
@@ -509,23 +605,22 @@ class AIFE:
         else:
             raise ValueError(f"Unsupported platform: {platform}")
         
-        # 测试连接
+        # Test connection
         try:
             test_response = llm.invoke("Hello!")
             if test_response:
                 return llm
             else:
-                self.logger.error(f"llm连接失败，请检查配置或代理")
+                self.logger.error(f"LLM connection failed, please check configuration or proxy")
                 return None
         except:
-            self.logger.error(f"llm连接失败，请检查配置或代理")
+            self.logger.error(f"LLM connection failed, please check configuration or proxy")
             return None
 
     async def handle_free_time(self) -> AsyncGenerator[str, None]:
-        if random.random() < 0.2:
+        if random.random() < 0.5:
             await self._write_note()
-            yield "I've written a note"
-            return  # 写日记后直接返回，不需要继续执行
+            yield "I wrote a note"
         else:
             try:
                 result = await self.agent_executor.ainvoke({"input": f"System: you are ignored by {self.user} do what you want.(if you want to initiate a conversation use ShouldTalk)"})
@@ -571,7 +666,18 @@ class AIFE:
                                     "result": action["output"]
                                 })
                     
-                    context_input = f"system: you are ignored by {self.user}\nYou have done these: {filtered_actions}\nInitiate a conversation naturally"
+                    # Use natural language to format action descriptions
+                    action_description = self._format_executed_actions(filtered_actions)
+                    
+                    # Use Identity enum to label information sources
+                    if action_description:
+                        brain_info = self._create_context_message(Identity.Brain, f"Just performed these actions: {action_description}")
+                        system_info = self._create_context_message(Identity.System, f"You are being ignored by {self.user}, try to initiate a conversation naturally")
+                        context_input = f"{system_info}\n{brain_info}\nInitiate conversation naturally"
+                    else:
+                        system_info = self._create_context_message(Identity.System, f"You are being ignored by {self.user}, try to initiate a conversation naturally")
+                        context_input = f"{system_info}\nInitiate conversation naturally"
+                    
                     self.logger.info(f"context_input: {context_input}")
                     # Create temporary messages for streaming generation
                     self.short_term_memory.add_message(HumanMessage(content=context_input))
@@ -646,7 +752,17 @@ class AIFE:
                                     "result": action["output"]
                                 })
                     
-                    context_input = f"{self.user}: {user_input}\nYou have done these: {filtered_actions}\nRespond naturally"
+                    # Use natural language to format action descriptions
+                    action_description = self._format_executed_actions(filtered_actions)
+                    
+                    # Use Identity enum to label information sources
+                    user_input_with_identity = self._create_context_message(Identity.User, user_input)
+                    if action_description:
+                        brain_info = self._create_context_message(Identity.Brain, f"Just performed these actions: {action_description}")
+                        context_input = f"{user_input_with_identity}\n{brain_info}\nRespond naturally"
+                    else:
+                        context_input = f"{user_input_with_identity}\nRespond naturally"
+                    
                     self.logger.info(f"context_input: {context_input}")
                     # Create temporary messages for streaming generation
                     self.short_term_memory.add_message(HumanMessage(content=context_input))
@@ -675,18 +791,20 @@ class AIFE:
     async def common_chat(self, user_input: str) -> AsyncGenerator[str, None]:
         """Asynchronous streaming chat generator"""
         try:
-            # 搜索相关记忆作为上下文
+            # Search relevant memories as context
             memory_context = self.memory_manager.get_memory_context(user_input)
             
-            # 添加用户消息到记忆系统
+            # Add user message to memory system
             self.memory_manager.short_term_memory.add_message(HumanMessage(content=user_input))
             
-            # 获取对话历史
+            # Get conversation history
             messages = self.memory_manager.get_recent_messages(10)
             
-            # 如果有记忆上下文，在最新消息前插入上下文
+            # If there is memory context, insert context before latest messages
             if memory_context.strip():
-                context_msg = SystemMessage(content=f"相关记忆上下文:\n{memory_context}")
+                # Use Identity to label memory source
+                brain_memory_info = self._create_context_message(Identity.Brain, f"Relevant memories: {memory_context}")
+                context_msg = SystemMessage(content=brain_memory_info)
                 messages = [context_msg] + messages
 
             full_response = ""
@@ -701,7 +819,7 @@ class AIFE:
             else:
                 yield "LLM not initialized properly"
             
-            # 添加AI回复到记忆系统
+            # Add AI reply to memory system
             if full_response:
                 self.memory_manager.short_term_memory.add_message(AIMessage(content=full_response))
                 
@@ -719,10 +837,10 @@ class AIFE:
             # If no new content, skip note writing
             if new_histories in ["No new chat history since last note.", "No new conversational content."]:
                 self.logger.info("No new content for note writing")
-                return "✓ No new content to write note"
-            
-            # Add new histories to note history
-            self.note_history.add_message(HumanMessage(content=f"New chat history:\n{new_histories}"))
+                self.note_history.add_message(HumanMessage(content=f"No new chat history, write something yourself."))
+            else:
+                # Add new histories to note history
+                self.note_history.add_message(HumanMessage(content=f"New chat history:\n{new_histories}"))
             
             # Generate note using LLM
             if not self.llm:
@@ -737,9 +855,10 @@ class AIFE:
                 if isinstance(note_content, list):
                     note_content = str(note_content)
                 
-                # Add note to long-term memory with special prefix
+                # Add note to long-term memory with special prefix and Identity
+                brain_note = self._create_context_message(Identity.Brain, f"[Internal Note] {note_content}")
                 self.memory_manager.long_term_memory.add_memory_with_user(
-                    memory=f"[Internal Note] {note_content}",
+                    memory=brain_note,
                     user=self.user
                 )
                 
@@ -773,7 +892,18 @@ class AIFE:
             formatted_history = []
             for msg in new_messages:
                 if isinstance(msg, HumanMessage):
-                    formatted_history.append(f"{self.user}: {msg.content}")
+                    # Check if message already contains Identity label, if not add it
+                    content = msg.content
+                    if isinstance(content, str):
+                        if not any(identity.value + ":" in content for identity in Identity):
+                            content = self._create_context_message(Identity.User, content)
+                        formatted_history.append(content)
+                    else:
+                        # If content is not string, convert to string
+                        content_str = str(content)
+                        if not any(identity.value + ":" in content_str for identity in Identity):
+                            content_str = self._create_context_message(Identity.User, content_str)
+                        formatted_history.append(content_str)
                 elif isinstance(msg, AIMessage):
                     formatted_history.append(f"{self.config.name}: {msg.content}")
                 elif isinstance(msg, SystemMessage):
@@ -790,23 +920,23 @@ class AIFE:
             return "Error retrieving chat history."
 
     async def _safe_call_callback(self, content: str):
-        """安全调用回调函数，自动检测是否为异步函数"""
+        """Safely call callback function, automatically detect if it's async function"""
         try:
             if self.stream_chat_callback:
                 if inspect.iscoroutinefunction(self.stream_chat_callback):
-                    # 如果是异步函数，使用await调用
+                    # If it's async function, use await to call
                     await self.stream_chat_callback(content)
                 else:
-                    # 如果是同步函数，直接调用
+                    # If it's sync function, call directly
                     self.stream_chat_callback(content)
         except Exception as e:
-            self.logger.error(f"调用stream_chat_callback时出错: {e}")
+            self.logger.error(f"Error calling stream_chat_callback: {e}")
 
-    # ============ 系统状态查询 ============
+    # ============ System Status Query ============
     
     
     def get_status_summary(self) -> Dict[str, Any]:
-        """获取状态摘要"""
+        """Get status summary"""
         return {
             "memory_stats": self.memory_manager.get_memory_stats() if hasattr(self, 'memory_manager') else {}
         }
