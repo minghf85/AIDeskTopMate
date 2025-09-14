@@ -10,6 +10,9 @@ import os
 import random
 import asyncio
 import inspect
+import win32gui
+import win32process
+import psutil
 config = DotMap(toml.load("config.toml"))
 user = config.agent.user
 # Import langchain related components
@@ -172,8 +175,14 @@ class AIFE:
         tools.append(Tool(
             name="WhatICanDo",
             func=lambda x: asyncio.run(self._whaticando(x)),
-            description="Ues this when being asked what can i do. Format: Yes"
+            description="Use this when being asked what can i do. Format: Yes"
         ))
+        if "whatuserdoing" in self.config.actions.enabled:
+            tools.append(Tool(
+                name="WhatUserDoing",
+                func=lambda x: asyncio.run(self._whatuserdoing(x)),
+                description="Use this when needing to know what user are doing. Format: Yes"
+            ))
         if "remember" in self.config.actions.enabled:
             tools.append(Tool(
                 name="Remember",
@@ -398,6 +407,17 @@ class AIFE:
                 else:
                     brain_action = self._create_context_message(Identity.Brain, "reviewed my capabilities")
                     action_descriptions.append(brain_action)
+            
+            elif action_name == "WhatUserDoing":
+                if action_output and "system:" in action_output.lower():
+                    # 新格式已经包含完整的system标识信息
+                    action_descriptions.append(action_output.replace("✓ ", ""))
+                elif action_output and action_output.startswith("✓"):
+                    system_action = self._create_context_message(Identity.System, "checked user activity")
+                    action_descriptions.append(system_action)
+                else:
+                    system_action = self._create_context_message(Identity.System, "attempted to check user activity but failed")
+                    action_descriptions.append(system_action)
         
         return ", ".join(action_descriptions) if action_descriptions else ""
     
@@ -408,6 +428,166 @@ class AIFE:
     async def _whaticando(self, something: str) -> str:
         """获取自己的actions"""
         return str(self.config.actions.enabled)
+    
+    async def _whatuserdoing(self, something: str) -> str:
+        """获取用户当前正在做什么 - 通过检查当前活动窗口"""
+        try:
+            # 导入必要的模块
+            import win32gui
+            import win32process
+            import win32con
+            import psutil
+            from typing import List, Dict, Any
+            
+            # 获取前台窗口（用户当前正在使用的窗口）
+            foreground_hwnd = win32gui.GetForegroundWindow()
+            foreground_window = None
+            
+            if foreground_hwnd:
+                try:
+                    window_title = win32gui.GetWindowText(foreground_hwnd)
+                    class_name = win32gui.GetClassName(foreground_hwnd)
+                    _, pid = win32process.GetWindowThreadProcessId(foreground_hwnd)
+                    
+                    try:
+                        process = psutil.Process(pid)
+                        process_name = process.name()
+                        process_exe = process.exe()
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        process_name = "Unknown"
+                        process_exe = "Unknown"
+                    
+                    if window_title.strip() and len(window_title) > 1:
+                        foreground_window = {
+                            'title': window_title,
+                            'process': process_name,
+                            'exe': process_exe
+                        }
+                        
+                except Exception as e:
+                    self.logger.warning(f"Failed to get foreground window info: {e}")
+            
+            # 获取其他活跃窗口
+            all_windows = []
+            
+            def enum_windows_callback(hwnd, windows_list):
+                try:
+                    if win32gui.IsWindowVisible(hwnd) and win32gui.GetParent(hwnd) == 0:
+                        window_title = win32gui.GetWindowText(hwnd)
+                        if window_title.strip() and len(window_title) > 1:
+                            _, pid = win32process.GetWindowThreadProcessId(hwnd)
+                            try:
+                                process = psutil.Process(pid)
+                                process_name = process.name()
+                                rect = win32gui.GetWindowRect(hwnd)
+                                width = rect[2] - rect[0]
+                                height = rect[3] - rect[1]
+                                
+                                # 过滤条件：排除系统窗口和太小的窗口
+                                if (width > 100 and height > 50 and 
+                                    hwnd != foreground_hwnd):  # 排除前台窗口，避免重复
+                                    windows_list.append({
+                                        'hwnd': hwnd,
+                                        'title': window_title,
+                                        'process': process_name,
+                                        'width': width,
+                                        'height': height
+                                    })
+                            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                                pass
+                except Exception:
+                    pass
+                return True
+            
+            try:
+                win32gui.EnumWindows(enum_windows_callback, all_windows)
+            except Exception as e:
+                self.logger.warning(f"Failed to enumerate windows: {e}")
+            
+            # 过滤掉无关紧要的系统窗口
+            ignored_classes = [
+                'Shell_TrayWnd', 'DV2ControlHost', 'WorkerW', 'Progman',
+                'Windows.UI.Core.CoreWindow', 'ApplicationFrameWindow'
+            ]
+            
+            ignored_titles = [
+                'Program Manager', 'Desktop Window Manager',
+                'NVIDIA GeForce Overlay DT', 'NVIDIA GeForce Overlay'
+            ]
+            
+            ignored_processes = [
+                'dwm.exe', 'winlogon.exe', 'csrss.exe', 'smss.exe',
+                'services.exe', 'lsass.exe', 'NVIDIA Overlay.exe'
+            ]
+            
+            # 过滤窗口
+            filtered_windows = []
+            for window in all_windows:
+                if (window['process'] not in ignored_processes and
+                    window['title'] not in ignored_titles and
+                    len(window['title'].strip()) > 0):
+                    filtered_windows.append(window)
+            
+            # 限制窗口数量，按大小排序（优先显示较大的窗口）
+            filtered_windows.sort(key=lambda w: w['width'] * w['height'], reverse=True)
+            other_windows = filtered_windows[:5]  # 最多显示5个其他窗口
+            
+            # 生成更友好的描述信息
+            if foreground_window:
+                # 判断用户活动类型
+                process_name = foreground_window['process'].lower()
+                title = foreground_window['title']
+                
+                # 根据应用类型生成更自然的描述
+                if any(app in process_name for app in ['chrome', 'firefox', 'edge', 'browser']):
+                    activity_desc = f"browsing web on {title}"
+                elif any(app in process_name for app in ['code', 'notepad', 'sublime', 'vim', 'atom']):
+                    activity_desc = f"coding/editing in {title}"
+                elif any(app in process_name for app in ['word', 'excel', 'powerpoint', 'office']):
+                    activity_desc = f"working on document: {title}"
+                elif any(app in process_name for app in ['game', 'steam']):
+                    activity_desc = f"playing game: {title}"
+                elif any(app in process_name for app in ['video', 'player', 'vlc', 'media']):
+                    activity_desc = f"watching video: {title}"
+                elif any(app in process_name for app in ['chat', 'discord', 'telegram', 'qq', 'wechat']):
+                    activity_desc = f"chatting on {title}"
+                else:
+                    activity_desc = f"using {title}"
+                
+                # 构建其他窗口的描述
+                if other_windows:
+                    other_apps = []
+                    for window in other_windows:
+                        app_name = window['process'].replace('.exe', '')
+                        other_apps.append(app_name)
+                    
+                    # 去重并限制数量
+                    unique_apps = list(dict.fromkeys(other_apps))[:4]  # 最多4个其他应用
+                    other_desc = ", ".join(unique_apps)
+                    if len(filtered_windows) > 5:
+                        other_desc += " and more"
+                    
+                    result_message = f"User is {activity_desc} and also has {other_desc} opened"
+                else:
+                    result_message = f"User is {activity_desc}"
+            else:
+                if other_windows:
+                    app_names = [w['process'].replace('.exe', '') for w in other_windows[:3]]
+                    result_message = f"User has {', '.join(app_names)} opened but no active foreground window"
+                else:
+                    result_message = "User appears to be idle or on desktop"
+            
+            # 使用优化的Identity.System标识信息
+            system_info = self._create_context_message(Identity.System, result_message)
+            self.logger.info(system_info)
+            
+            return f"✓ {system_info}"
+            
+        except Exception as e:
+            error_msg = f"Failed to get user activity information: {str(e)}"
+            self.logger.error(error_msg)
+            return f"✗ {error_msg}"
+    
     async def _remember_something(self, something: str) -> str:
         """记住某些信息到长期记忆中"""
         something = something.strip().split('\n')[0]

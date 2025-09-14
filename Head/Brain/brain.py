@@ -81,9 +81,9 @@ class Brain(QObject):
         self.end_punctuation = config.tts.end_punctuation  # 获取结束标点符号列表
         self.interrupted = False  # 新增打断标志
         self.pending_transcription = None  # 等待处理的转录文本
-        self.ear_enabled = True
+        self.ear_enabled = False  # 默认闭麦
         self.mouth_enabled = True
-        self.input_mode = "voice"  # "voice" 或 "text"
+        self.input_mode = "text"  # 默认为文本输入模式
         self.use_agent = config.agent.get("enable_agent", True)  # 控制是否使用Agent功能
         
         # 初始化监控器
@@ -92,7 +92,7 @@ class Brain(QObject):
         # 更新feel_state的初始配置
         self.feel_state.update_component_status("brain", 
             interrupt_mode=InterruptMode(self.interrupt_mode),
-            interaction_mode=InteractionMode.VOICE if self.input_mode == "voice" else InteractionMode.TEXT,
+            interaction_mode=InteractionMode.TEXT,  # 默认为文本输入模式
             sync_subtitle=self.sync_subtitle
         )
         
@@ -268,7 +268,7 @@ class Brain(QObject):
         self.window.show()
         self.window.msgbox.show()
         self.window._load_model(config.live2d.model_path)
-        self.window.msgbox.show_text("大脑已唤醒，系统运行中...")
+        self.window.msgbox.show_text("大脑已唤醒，系统运行中...\n当前模式：终端文本输入")
         
         # 启动异步事件循环
         self.async_loop.start_loop()
@@ -297,6 +297,11 @@ class Brain(QObject):
         # 设置初始响应时间，让系统能够正常进入空闲状态
         self.feel_state.interaction_state.update_response_time()
         self.logger.info("已设置初始响应时间")
+        
+        # 启动终端输入监听（因为默认是文本输入模式）
+        if self.terminal_input:
+            self.async_loop.run_coroutine(self.terminal_input.start_input_monitoring())
+            self.logger.info("已启动终端输入监听")
         
         return self.window.model
 
