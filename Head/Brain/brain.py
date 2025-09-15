@@ -151,9 +151,17 @@ class Brain(QObject):
             self.ear.transcriptionReady.connect(self.handle_transcription)
             self.ear.errorOccurred.connect(self.handle_asr_error)
             
-            # 启动ASR线程
+            # 启动ASR线程（但不启动音频流）
             self.ear.start()
             self.logger.info("ASR线程已启动")
+            
+            # 根据初始输入模式决定是否启用音频流
+            if self.input_mode == "voice" and self.ear_enabled:
+                # 如果是语音输入模式且开麦，则启动音频流
+                self.ear.resume_stream()
+                self.logger.info("已开麦，切换到语音输入模式")
+            else:
+                self.logger.info("已闭麦，当前为文本输入模式")
             
             # 更新ear状态
             self.feel_state.update_component_status("ear", 

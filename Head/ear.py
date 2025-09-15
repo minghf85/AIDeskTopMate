@@ -200,8 +200,8 @@ class ASR(QThread):
                 self.ws = ws
                 self.logger.info("WebSocket 连接已建立")
                 
-                # 启动音频流
-                self.setup_audio_stream()
+                # 只有在需要时才启动音频流（由外部控制）
+                # 音频流启动将由 resume_stream() 方法处理
                 
                 # 创建并行任务
                 send_task = asyncio.create_task(self.send_audio_data())
@@ -282,8 +282,11 @@ class ASR(QThread):
     def resume_stream(self):
         """恢复音频流"""
         self.logger.info("正在开启麦克风")
-        if self.audio_stream is None:
+        if self.audio_stream is None and self.ws is not None:
+            # 只有在WebSocket连接存在时才启动音频流
             self.setup_audio_stream()
+        elif self.ws is None:
+            self.logger.warning("WebSocket未连接，无法启动音频流")
 
     def stop(self):
         """停止识别"""

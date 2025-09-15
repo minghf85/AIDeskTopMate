@@ -175,19 +175,19 @@ class AIFE:
         tools.append(Tool(
             name="WhatICanDo",
             func=lambda x: asyncio.run(self._whaticando(x)),
-            description="Use this when being asked what can i do. Format: Yes"
+            description="Use this tool when the user asks about your capabilities or what actions you can perform. This will return a list of your enabled actions and features. Input: any value (e.g., 'yes')"
         ))
         if "whatuserdoing" in self.config.actions.enabled:
             tools.append(Tool(
                 name="WhatUserDoing",
                 func=lambda x: asyncio.run(self._whatuserdoing(x)),
-                description="Use this when needing to know what user are doing. Format: Yes"
+                description="Use this tool to check what the user is currently doing by analyzing their active windows and applications. Useful when you want to understand user's current activity, when feeling ignored, or when you need context about user's state. Input: any value (e.g., 'yes')"
             ))
         if "remember" in self.config.actions.enabled:
             tools.append(Tool(
                 name="Remember",
                 func=lambda x: asyncio.run(self._remember_something(x)),
-                description="Store important information into long-term memory when needing to remember user preferences, important facts, personal information, and other content that needs to be preserved long-term. Input format: content to remember. Example: our code is Light_Sea_Grand"
+                description="Store important information into long-term memory when needing to remember user preferences, important facts, personal information, and other content that needs to be preserved long-term. Input format: content to remember. Example: Amon likes watching anime"
             ))
         if "recall" in self.config.actions.enabled:
             tools.append(Tool(
@@ -226,14 +226,14 @@ class AIFE:
         # Web search tool
         if "web_search" in self.config.actions.enabled:
             try:
-                wikipedia = WikipediaQueryRun(api_wrapper=WikipediaAPIWrapper())
                 tools.append(Tool(
                     name="WebSearch",
-                    func=wikipedia.run,
-                    description="Search Wikipedia for information"
+                    func=lambda x: asyncio.run(self._wikipedia_search(x)),
+                    description="Useful for when you need to look up a topic on the internet to find more information. Input should be a search query."
                 ))
             except Exception as e:
                 self.logger.warning(f"Failed to initialize Wikipedia tool: {e}")
+
 
         # Emoji display tool
         if "show_emoji" in self.config.actions.enabled:
@@ -268,6 +268,7 @@ class AIFE:
         # Create prompt template
         prompt = ChatPromptTemplate.from_messages([
             ("system", self.config.decision_prompt),
+            MessagesPlaceholder(variable_name="chat_history", optional=True),
             ("human", "{input}"),
             MessagesPlaceholder(variable_name="agent_scratchpad", optional=True)
         ])
@@ -294,7 +295,8 @@ class AIFE:
             
         chain = (
             RunnablePassthrough.assign(
-                agent_scratchpad=lambda x: format_scratchpad(x.get("intermediate_steps", []))
+                agent_scratchpad=lambda x: format_scratchpad(x.get("intermediate_steps", [])),
+                chat_history=lambda x: x.get("chat_history", [])
             )
             | prompt.partial(
                 persona=self.config.persona,
@@ -588,6 +590,13 @@ class AIFE:
             self.logger.error(error_msg)
             return f"✗ {error_msg}"
     
+    async def _wikipedia_search(self, query: str) -> str:
+        """Search Wikipedia for a query"""
+        query = query.strip().split('\n')[0]
+        wikipedia = WikipediaQueryRun(api_wrapper=WikipediaAPIWrapper())
+        wikipedia_result = wikipedia.run(query)
+        return wikipedia_result
+
     async def _remember_something(self, something: str) -> str:
         """记住某些信息到长期记忆中"""
         something = something.strip().split('\n')[0]
@@ -803,7 +812,13 @@ class AIFE:
             yield "I wrote a note"
         else:
             try:
-                result = await self.agent_executor.ainvoke({"input": f"System: you are ignored by {self.user} do what you want.(if you want to initiate a conversation use ShouldTalk)"})
+                # Get recent chat history for context
+                chat_history = self.memory_manager.get_recent_messages(5)  # Get last 5 messages
+                
+                result = await self.agent_executor.ainvoke({
+                    "input": f"System: you are ignored by {self.user} do what you want.(if you want to initiate a conversation use ShouldTalk)",
+                    "chat_history": chat_history
+                })
                 if 'intermediate_steps' in result:
                     for action, observation in result['intermediate_steps']:
                         self.logger.info(f"➤ {action.tool}:")
@@ -886,8 +901,14 @@ class AIFE:
             # Execute multi-action Agent
             try:
                 if user_input:
-                # Directly use agent_executor's ainvoke method to execute multi-actions
-                    result = await self.agent_executor.ainvoke({"input": user_input})
+                    # Get recent chat history for context
+                    chat_history = self.memory_manager.get_recent_messages(5)  # Get last 5 messages
+                    
+                    # Directly use agent_executor's ainvoke method to execute multi-actions
+                    result = await self.agent_executor.ainvoke({
+                        "input": user_input,
+                        "chat_history": chat_history
+                    })
                 # Display execution results
                 self.logger.info("📋 Multi-action execution details:")
                 if 'intermediate_steps' in result:

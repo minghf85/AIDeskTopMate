@@ -363,15 +363,21 @@ class FeelState:
         return 0.0
     
     def get_idle_time(self) -> float:
-        """获取空闲时间(秒) - 只有在真正空闲时才开始计时
+        """获取空闲时间(秒) - 从最后一次响应完成到现在的时间
         
-        在以下任何情况下都返回0并重置计时器：
-        - 正在听音(is_hearing)或说话(is_speaking)
+        数字人的空闲时间定义：
+        - 起点：数字人完成最后一次响应的时间(last_response_time)
+        - 终点：当前时间
+        - 返回值：只有在真正空闲时才返回计算出的时间差，忙碌时返回0
+        
+        忙碌状态包括：
+        - 正在听音(is_hearing)或说话(is_speaking)  
         - 有用户输入待处理(current_user_input)
         - 正在生成响应(current_response)
         - 有转录待处理(pending_transcription)
         - 处于自主行为模式(is_autonomous)
-        只有在完全空闲状态下才从last_response_time开始计算
+        
+        注意：忙碌时返回0，但不重置last_response_time，保持时间基准点
         """
         # 检查所有非空闲状态
         is_busy = (
@@ -384,13 +390,14 @@ class FeelState:
         )
         
         if is_busy:
-            # 重置last_response_time为当前时间，确保真正空闲时从0开始计算
-            self.interaction_state.last_response_time = time.time()
+            # 忙碌时返回0，但不重置last_response_time
             return 0.0
         
         # 只有在真正空闲时才计算从last_response_time开始的时间
         if self.interaction_state.last_response_time:
             return time.time() - self.interaction_state.last_response_time
+        
+        # 如果从未有过响应，返回系统运行时间
         return self.get_uptime()
     
     def get_error_rate(self) -> float:
