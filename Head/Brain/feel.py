@@ -292,7 +292,15 @@ class FeelState:
     # ============= 状态更新方法 =============
     
     def update_component_status(self, component: str, **kwargs):
-        """更新组件状态"""
+        """更新组件状态，并在TTS播放结束时重置空闲计时起点"""
+        # 检查is_playing变化（mouth组件）
+        if component == "mouth" and "is_playing" in kwargs:
+            old_is_playing = self.component_status.is_playing
+            new_is_playing = kwargs["is_playing"]
+            if old_is_playing and not new_is_playing:
+                # TTS播放刚刚结束，重置last_response_time为空闲计时起点
+                self.interaction_state.last_response_time = time.time()
+        # 正常更新组件状态
         if component == "ear":
             for key, value in kwargs.items():
                 if hasattr(self.component_status, key):
@@ -311,7 +319,7 @@ class FeelState:
                     setattr(self.component_status, key, value)
         elif component == "brain":
             for key, value in kwargs.items():
-                if hasattr(self.component_status, key):
+                if hasattr(self.component_status, key): 
                     setattr(self.component_status, key, value)
     
     def update_interaction_state(self, **kwargs):
